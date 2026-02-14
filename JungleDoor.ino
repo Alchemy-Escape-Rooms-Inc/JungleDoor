@@ -36,51 +36,50 @@
 #include <PubSubClient.h>
 
 // ============================================
-// DEVICE CONFIGURATION
+// DEVICE CONFIGURATION — Sourced from MANIFEST.h
 // ============================================
-#define DEVICE_NAME       "Jungle Door"
-#define FIRMWARE_VERSION  "2.7.0"
+#include "MANIFEST.h"
 
-// WiFi Settings
-const char* WIFI_SSID     = "AlchemyGuest";
-const char* WIFI_PASSWORD = "VoodooVacation5601";
+// Bridge: all code below still uses these names, but values come from manifest
+#define DEVICE_NAME       manifest::DEVICE_NAME
+#define FIRMWARE_VERSION  manifest::FIRMWARE_VERSION
 
-// MQTT Settings
-const char* MQTT_SERVER   = "10.1.10.115";
-const int   MQTT_PORT     = 1883;
+const char* WIFI_SSID     = manifest::WIFI_SSID;
+const char* WIFI_PASSWORD = manifest::WIFI_PASSWORD;
+
+const char* MQTT_SERVER   = manifest::MQTT_SERVER;
+const int   MQTT_PORT     = manifest::MQTT_PORT;
 
 // ============================================
-// PIN DEFINITIONS
+// PIN DEFINITIONS — Sourced from MANIFEST.h
 // ============================================
-#define DIR_PIN         4       // MD13S DIR pin - Direction control
-#define PWM_PIN         5       // MD13S PWM pin - Speed control (PWM capable)
-#define LIMIT_OPEN      8       // Digital input for open limit switch (mechanical)
-#define LIMIT_CLOSED    19      // Analog input for closed limit switch (laser beam)
+#define DIR_PIN         manifest::DIR_PIN
+#define PWM_PIN         manifest::PWM_PIN
+#define LIMIT_OPEN      manifest::LIMIT_OPEN
+#define LIMIT_CLOSED    manifest::LIMIT_CLOSED
 
-// Laser beam threshold - below this value means beam is blocked (door present)
-// 2.58V when blocked ≈ 3200, 3.3V when clear ≈ 4095, threshold at ~2.9V
-#define LIMIT_CLOSED_THRESHOLD 3600
-#define STATUS_LED_OPEN    21   // Status LED - door open
-#define STATUS_LED_CLOSED  22   // Status LED - door closed
-#define STATUS_LED_MOVING  23   // Status LED - door moving
+#define LIMIT_CLOSED_THRESHOLD manifest::LIMIT_CLOSED_THRESHOLD
+#define STATUS_LED_OPEN    manifest::STATUS_LED_OPEN    // UNUSED — flagged for removal
+#define STATUS_LED_CLOSED  manifest::STATUS_LED_CLOSED  // UNUSED — flagged for removal
+#define STATUS_LED_MOVING  manifest::STATUS_LED_MOVING  // UNUSED — flagged for removal
 
-// Motor Configuration
-#define MOTOR_SPEED     150     // PWM value 0-255
-#define DIR_OPEN        HIGH    // Direction for opening
-#define DIR_CLOSE       LOW     // Direction for closing
+// Motor Configuration — Sourced from MANIFEST.h
+#define MOTOR_SPEED     manifest::MOTOR_SPEED
+#define DIR_OPEN        manifest::DIR_OPEN
+#define DIR_CLOSE       manifest::DIR_CLOSE
 
-// PWM Configuration for ESP32
-#define PWM_FREQ        5000
-#define PWM_RESOLUTION  8
+// PWM Configuration — Sourced from MANIFEST.h
+#define PWM_FREQ        manifest::PWM_FREQ
+#define PWM_RESOLUTION  manifest::PWM_RESOLUTION
 
-// Debounce settings
-#define LIMIT_DEBOUNCE_MS 150
+// Debounce — Sourced from MANIFEST.h
+#define LIMIT_DEBOUNCE_MS manifest::LIMIT_DEBOUNCE_MS
 
-// Door timing (milliseconds)
-#define DOOR_RAMP_UP_MS     500   // 0.5s to reach full speed
-#define DOOR_FULL_SPEED_MS  3000  // 3s at full speed  
-#define DOOR_RAMP_DOWN_MS   500   // 0.5s to slow down
-#define DOOR_TOTAL_TIME_MS  4000  // Total movement time
+// Door timing — Sourced from MANIFEST.h
+#define DOOR_RAMP_UP_MS     manifest::DOOR_RAMP_UP_MS
+#define DOOR_FULL_SPEED_MS  manifest::DOOR_FULL_SPEED_MS
+#define DOOR_RAMP_DOWN_MS   manifest::DOOR_RAMP_DOWN_MS
+#define DOOR_TOTAL_TIME_MS  manifest::DOOR_TOTAL_TIME_MS
 
 // ============================================
 // MQTT TOPICS
@@ -130,10 +129,10 @@ unsigned long bootTime = 0;
 unsigned long lastBlinkTime = 0;
 unsigned long motorStartTime = 0;
 
-const unsigned long HEARTBEAT_INTERVAL = 30000;
-const unsigned long WIFI_CHECK_INTERVAL = 30000;
-const unsigned long MQTT_RECONNECT_INTERVAL = 5000;
-const unsigned long BLINK_INTERVAL = 300;
+const unsigned long HEARTBEAT_INTERVAL = manifest::HEARTBEAT_INTERVAL;
+const unsigned long WIFI_CHECK_INTERVAL = manifest::WIFI_CHECK_INTERVAL;
+const unsigned long MQTT_RECONNECT_INTERVAL = manifest::MQTT_RECONNECT_INTERVAL;
+const unsigned long BLINK_INTERVAL = manifest::BLINK_INTERVAL;
 
 bool blinkState = false;
 bool systemReady = false;
