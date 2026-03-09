@@ -29,7 +29,7 @@
  *    5. This file is the sole source of configuration values — the .ino
  *       file should reference these constants, not hardcode its own.
  *
- *  LAST UPDATED: 2026-02-12
+ *  LAST UPDATED: 2026-03-09
  *  MANIFEST VERSION: 2.0
  * ============================================================================
  */
@@ -70,7 +70,7 @@ namespace manifest {
 
 // ── Device Identity ─────────────────────────────────────────────────────────
 inline constexpr const char* DEVICE_NAME    = "JungleDoor";       // @DEVICE_NAME  (MQTT client ID + topic base)
-inline constexpr const char* FIRMWARE_VERSION = "2.7.0";          // @FIRMWARE_VERSION
+inline constexpr const char* FIRMWARE_VERSION = "2.8.0";          // @FIRMWARE_VERSION
 
 
 // ============================================================================
