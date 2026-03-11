@@ -29,8 +29,8 @@
  *    5. This file is the sole source of configuration values — the .ino
  *       file should reference these constants, not hardcode its own.
  *
- *  LAST UPDATED: 2026-03-09
- *  MANIFEST VERSION: 2.0
+ *  LAST UPDATED: 2026-03-11
+ *  MANIFEST VERSION: 3.0
  * ============================================================================
  */
 
@@ -70,7 +70,7 @@ namespace manifest {
 
 // ── Device Identity ─────────────────────────────────────────────────────────
 inline constexpr const char* DEVICE_NAME    = "JungleDoor";       // @DEVICE_NAME  (MQTT client ID + topic base)
-inline constexpr const char* FIRMWARE_VERSION = "2.8.0";          // @FIRMWARE_VERSION
+inline constexpr const char* FIRMWARE_VERSION = "3.0.0";          // @FIRMWARE_VERSION
 
 
 // ============================================================================
@@ -144,10 +144,9 @@ inline constexpr int PWM_PIN = 5;                                 // @PIN:PWM   
 inline constexpr int LIMIT_OPEN   = 8;                            // @PIN:LIMIT_OPEN   | Mechanical switch, INPUT_PULLUP, active LOW
 inline constexpr int LIMIT_CLOSED = 19;                           // @PIN:LIMIT_CLOSED | Laser beam sensor, analog read, active below threshold
 
-// ── Status LEDs (UNUSED — flagged for removal) ─────────────────────────────
-inline constexpr int STATUS_LED_OPEN   = 21;                      // @PIN:LED_OPEN   | UNUSED — can be reclaimed
-inline constexpr int STATUS_LED_CLOSED = 22;                      // @PIN:LED_CLOSED | UNUSED — can be reclaimed
-inline constexpr int STATUS_LED_MOVING = 23;                      // @PIN:LED_MOVING | UNUSED — can be reclaimed
+// ── Status LEDs — REMOVED ────────────────────────────────────────────────────
+// Pins 21, 22, 23 were previously allocated for status LEDs.
+// LEDs were never installed. Pins reclaimed. Code removed in v3.0.0.
 
 // @END:PINS
 
@@ -166,10 +165,8 @@ inline constexpr int PWM_FREQ        = 5000;                      // @PWM:FREQ  
 inline constexpr int PWM_RESOLUTION  = 8;                         // @PWM:RESOLUTION | 8-bit (0-255)
 
 // ── Door Movement Timing ────────────────────────────────────────────────────
-inline constexpr int DOOR_RAMP_UP_MS    = 500;                    // @DOOR:RAMP_UP    | 0.5s acceleration to full speed
-inline constexpr int DOOR_FULL_SPEED_MS = 3000;                   // @DOOR:FULL_SPEED | 3s at full speed
-inline constexpr int DOOR_RAMP_DOWN_MS  = 500;                    // @DOOR:RAMP_DOWN  | 0.5s deceleration to stop
-inline constexpr int DOOR_TOTAL_TIME_MS = 4000;                   // @DOOR:TOTAL_TIME | 4s total movement window
+inline constexpr int MOTOR_TIMEOUT_MS   = 6000;                   // @DOOR:TIMEOUT    | 6s safety cutoff if no limit switch hit
+inline constexpr int CLOSE_OVERRUN_MS   = 500;                    // @DOOR:OVERRUN    | 500ms extra motor run after CLOSED limit hit
 
 // @END:MOTOR
 
@@ -197,7 +194,7 @@ inline constexpr int LIMIT_DEBOUNCE_MS = 150;                     // @DEBOUNCE:L
 
 inline constexpr unsigned long WIFI_CHECK_INTERVAL     = 30000;   // @TIMING:WIFI_CHECK     | Check WiFi connection every 30s
 inline constexpr unsigned long MQTT_RECONNECT_INTERVAL = 5000;    // @TIMING:MQTT_RECONNECT | Retry MQTT connection every 5s
-inline constexpr unsigned long BLINK_INTERVAL          = 300;     // @TIMING:BLINK          | LED blink rate during movement (UNUSED)
+// BLINK_INTERVAL removed — LED code removed in v3.0.0
 
 // @END:TIMING
 
@@ -214,13 +211,12 @@ inline constexpr unsigned long BLINK_INTERVAL          = 300;     // @TIMING:BLI
 //   @PURPOSE:  Controls the DC motor that slides the door along its track
 //   @DETAIL:   2-pin interface (DIR + PWM). DIR sets direction, PWM sets speed
 //              via ESP32 LEDC peripheral at 5kHz/8-bit resolution. Motor runs
-//              at 59% duty (150/255) with smooth ramp-up and ramp-down
-//              for theatrical door movement.
+//              at 59% duty (150/255) at constant safe speed.
 //
 // @COMPONENT:  DC Sliding Door Motor
 //   @PURPOSE:  Physically moves the door panel along a track
 //   @DETAIL:   Driven by MD13S. Opens on DIR=HIGH, closes on DIR=LOW.
-//              Total travel time approximately 4 seconds with ramping.
+//              6s safety timeout. Close adds 500ms overrun past limit.
 //
 // @COMPONENT:  Mechanical Limit Switch (Open Position)
 //   @PURPOSE:  Detects when door has fully opened
@@ -235,11 +231,9 @@ inline constexpr unsigned long BLINK_INTERVAL          = 300;     // @TIMING:BLI
 //              at 3600). Hidden to preserve the secret door illusion — no
 //              visible mechanical switch on the player-facing wall.
 //
-// @COMPONENT:  Status LEDs (x3)
-//   @PURPOSE:  UNUSED — originally for diagnostic indication
-//   @DETAIL:   Pins 21 (open), 22 (closed), 23 (moving/blink). Code exists
-//              but LEDs are not installed. Pins can be reclaimed for future
-//              features. Flagged for code removal.
+// @COMPONENT:  Status LEDs (x3) — REMOVED in v3.0.0
+//   @PURPOSE:  Were never installed. Pins 21, 22, 23 reclaimed.
+//   @DETAIL:   All LED code removed from firmware.
 //
 // @END:COMPONENTS
 
@@ -277,17 +271,16 @@ inline constexpr unsigned long BLINK_INTERVAL          = 300;     // @TIMING:BLI
 //
 // @OPERATION:OPEN
 //   Send "OPEN" to MermaidsTale/JungleDoor/command
-//   Motor ramps up over 0.5s, runs at PWM 150 for 3s, ramps down over 0.5s
-//   Publishes "OPENING" immediately, then "OPEN" when complete
-//   Stops early if open limit switch triggers
-//   Falls back to 4-second timer if limit switch does not trigger
+//   Motor runs at constant safe speed (PWM 150) until OPEN limit switch
+//   Publishes "OPENING" immediately, then "OPEN" when limit hit
+//   6-second safety timeout if limit switch never triggers
 //
 // @OPERATION:CLOSE
 //   Send "CLOSE" to MermaidsTale/JungleDoor/command
-//   Same ramping profile as OPEN but in reverse direction
-//   Publishes "CLOSING" immediately, then "CLOSED" when complete
-//   Stops early if closed limit switch triggers
-//   Falls back to 4-second timer if limit switch does not trigger
+//   Motor runs at constant safe speed until CLOSED limit switch
+//   After CLOSED limit hit, motor continues 500ms to seat the door
+//   Publishes "CLOSING" immediately, then "CLOSED" after overrun
+//   6-second safety timeout if limit switch never triggers
 //
 // @OPERATION:EMERGENCY_STOP
 //   Send "STOP" to MermaidsTale/JungleDoor/command
@@ -332,11 +325,9 @@ inline constexpr unsigned long BLINK_INTERVAL          = 300;     // @TIMING:BLI
 //   position. On reboot, if neither limit switch is active, the state will
 //   be DOOR_STOPPED (unknown position).
 //
-// @QUIRK:UNUSED_LEDS
-//   Three status LED pins (21, 22, 23) are defined and initialized in code
-//   but no LEDs are physically installed. The LED control code runs every
-//   loop iteration updating pins that connect to nothing. Safe but wasteful.
-//   Flagged for removal — would free 3 GPIO pins and simplify the loop.
+// @QUIRK:UNUSED_LEDS  [RESOLVED]
+//   PREVIOUSLY: Three LED pins allocated but never installed.
+//   FIXED: All LED code and pin definitions removed in v3.0.0.
 //
 // @END:OPERATIONS
 
@@ -370,9 +361,9 @@ inline constexpr unsigned long BLINK_INTERVAL          = 300;     // @TIMING:BLI
 //                                 Analog read: ~3200 blocked, ~4095 clear
 //                                 Threshold: 3600
 //
-//   ESP32-S3 Pin 21 ───────────── UNUSED (was Status LED Open)
-//   ESP32-S3 Pin 22 ───────────── UNUSED (was Status LED Closed)
-//   ESP32-S3 Pin 23 ───────────── UNUSED (was Status LED Moving)
+//   ESP32-S3 Pin 21 ───────────── FREE (LED removed v3.0.0)
+//   ESP32-S3 Pin 22 ───────────── FREE (LED removed v3.0.0)
+//   ESP32-S3 Pin 23 ───────────── FREE (LED removed v3.0.0)
 //
 //   Cytron MD13S POWER ────────── Motor power supply (in Shattic)
 //   Cytron MD13S MOTOR OUT ────── DC sliding door motor
