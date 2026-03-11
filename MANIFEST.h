@@ -29,7 +29,7 @@
  *    5. This file is the sole source of configuration values — the .ino
  *       file should reference these constants, not hardcode its own.
  *
- *  LAST UPDATED: 2026-02-12
+ *  LAST UPDATED: 2026-03-09
  *  MANIFEST VERSION: 2.0
  * ============================================================================
  */
@@ -70,7 +70,7 @@ namespace manifest {
 
 // ── Device Identity ─────────────────────────────────────────────────────────
 inline constexpr const char* DEVICE_NAME    = "JungleDoor";       // @DEVICE_NAME  (MQTT client ID + topic base)
-inline constexpr const char* FIRMWARE_VERSION = "2.7.0";          // @FIRMWARE_VERSION
+inline constexpr const char* FIRMWARE_VERSION = "2.8.0";          // @FIRMWARE_VERSION
 
 
 // ============================================================================
@@ -227,7 +227,6 @@ inline constexpr unsigned long BLINK_INTERVAL          = 300;     // @TIMING:BLI
 //   @DETAIL:   Pin 8, INPUT_PULLUP, active LOW. Located at the open end
 //              of the door track. Visible from the Jungle side (secret
 //              already revealed at this point).
-//              STATUS: UNRELIABLE — not currently relied upon for stopping.
 //
 // @COMPONENT:  Laser Beam Sensor (Closed Position)
 //   @PURPOSE:  Detects when door has fully closed
@@ -235,7 +234,6 @@ inline constexpr unsigned long BLINK_INTERVAL          = 300;     // @TIMING:BLI
 //              present (blocked ≈ 2.58V/3200, clear ≈ 3.3V/4095, threshold
 //              at 3600). Hidden to preserve the secret door illusion — no
 //              visible mechanical switch on the player-facing wall.
-//              STATUS: UNRELIABLE — not currently relied upon for stopping.
 //
 // @COMPONENT:  Status LEDs (x3)
 //   @PURPOSE:  UNUSED — originally for diagnostic indication
@@ -281,15 +279,15 @@ inline constexpr unsigned long BLINK_INTERVAL          = 300;     // @TIMING:BLI
 //   Send "OPEN" to MermaidsTale/JungleDoor/command
 //   Motor ramps up over 0.5s, runs at PWM 150 for 3s, ramps down over 0.5s
 //   Publishes "OPENING" immediately, then "OPEN" when complete
-//   Stops early if open limit switch triggers (currently unreliable)
-//   Falls back to 4-second timer as primary stop mechanism
+//   Stops early if open limit switch triggers
+//   Falls back to 4-second timer if limit switch does not trigger
 //
 // @OPERATION:CLOSE
 //   Send "CLOSE" to MermaidsTale/JungleDoor/command
 //   Same ramping profile as OPEN but in reverse direction
 //   Publishes "CLOSING" immediately, then "CLOSED" when complete
-//   Stops early if closed limit switch triggers (currently unreliable)
-//   Falls back to 4-second timer as primary stop mechanism
+//   Stops early if closed limit switch triggers
+//   Falls back to 4-second timer if limit switch does not trigger
 //
 // @OPERATION:EMERGENCY_STOP
 //   Send "STOP" to MermaidsTale/JungleDoor/command
@@ -309,22 +307,16 @@ inline constexpr unsigned long BLINK_INTERVAL          = 300;     // @TIMING:BLI
 //
 //  ── KNOWN QUIRKS ───────────────────────────────────────────────────────────
 //
-// @QUIRK:LIMIT_SWITCHES_UNRELIABLE
-//   CRITICAL: Both limit switches are currently unreliable and not being
-//   depended upon for stopping the motor. The door operates primarily on a
-//   4-second timer. The limit switch code is still active and will stop the
-//   motor early if a switch triggers, but this is not consistently happening.
-//   Fixing the limit switches is a pending issue. Risk: if the door track
-//   gets slower over time (friction, grime, motor wear), the 4-second window
-//   may not be enough and the door will stop short.
 //
-// @QUIRK:DEVICE_NAME_SPACE
-//   The current code defines DEVICE_NAME as "Jungle Door" with a space
-//   (line 41 of JungleDoor.ino). This creates MQTT topics with spaces:
-//   "MermaidsTale/Jungle Door/command". The correct name per the naming
-//   standard is "JungleDoor" with no space. When fixing this, all MQTT
-//   topic subscriptions in WatchTower and BAC integration must be updated
-//   simultaneously, or the device will go silent on the old topics.
+// @QUIRK:DEVICE_NAME_SPACE  [RESOLVED]
+//   PREVIOUSLY: DEVICE_NAME was "Jungle Door" with a space, creating
+//   MQTT topics like "MermaidsTale/Jungle Door/command".
+//   FIXED: DEVICE_NAME is now "JungleDoor" (no space) via MANIFEST.h.
+//   ACTION REQUIRED: Verify that WatchTower, BAC, and all external systems
+//   subscribe/publish to the corrected topics (no space). If any system
+//   still uses the old "Jungle Door" topic, commands will never reach
+//   this device — this is a likely cause of "not deploying" if heartbeats
+//   are visible but commands have no effect.
 //
 // @QUIRK:NO_WATCHDOG
 //   Unlike the Cannons, this firmware does not implement a hardware watchdog
@@ -332,13 +324,6 @@ inline constexpr unsigned long BLINK_INTERVAL          = 300;     // @TIMING:BLI
 //   device will not auto-recover. A manual RESET command or hardware power
 //   cycle is required. Consider adding esp_task_wdt for future versions.
 //
-// @QUIRK:TIMEOUT_VS_LIMIT
-//   The door movement timeout (4s) and the ramping profile (0.5s up + 3s
-//   full + 0.5s down = 4s) are exactly matched. If a limit switch triggers
-//   at 3.8 seconds, the motor is already in its ramp-down phase and nearly
-//   stopped anyway. But if the door travel time increases beyond 4 seconds,
-//   the motor will stop before reaching the limit — and the limit switch
-//   won't save it because the switches are currently unreliable.
 //
 // @QUIRK:MOTOR_STOPS_ON_RESET
 //   The RESET command explicitly calls stopMotor() before rebooting. This is

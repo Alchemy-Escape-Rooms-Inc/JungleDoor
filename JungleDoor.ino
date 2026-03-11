@@ -579,13 +579,15 @@ void send_heartbeat() {
 // ============================================
 void startOpening() {
   if (debouncedLimitOpen) {
-    mqttLog("[INFO] Already at OPEN limit");
+    mqttLogf("[INFO] Already at OPEN limit (raw=%d, debounced=%d, pin=%d)",
+             rawLimitOpen, debouncedLimitOpen, digitalRead(LIMIT_OPEN));
     currentState = DOOR_OPEN;
     stopMotor();
     return;
   }
 
-  mqttLog("[MOTOR] Opening door...");
+  mqttLogf("[MOTOR] Opening door... (limitOpen=%d, limitClosed=%d, laserRaw=%d)",
+           debouncedLimitOpen, debouncedLimitClosed, analogRead(LIMIT_CLOSED));
   currentState = DOOR_OPENING;
   motorStartTime = millis();
   digitalWrite(DIR_PIN, DIR_OPEN);
@@ -600,13 +602,15 @@ void startOpening() {
 
 void startClosing() {
   if (debouncedLimitClosed) {
-    mqttLog("[INFO] Already at CLOSED limit");
+    mqttLogf("[INFO] Already at CLOSED limit (raw=%d, debounced=%d, laserRaw=%d)",
+             rawLimitClosed, debouncedLimitClosed, analogRead(LIMIT_CLOSED));
     currentState = DOOR_CLOSED;
     stopMotor();
     return;
   }
 
-  mqttLog("[MOTOR] Closing door...");
+  mqttLogf("[MOTOR] Closing door... (limitOpen=%d, limitClosed=%d, laserRaw=%d)",
+           debouncedLimitOpen, debouncedLimitClosed, analogRead(LIMIT_CLOSED));
   currentState = DOOR_CLOSING;
   motorStartTime = millis();
   digitalWrite(DIR_PIN, DIR_CLOSE);
@@ -626,6 +630,12 @@ void stopMotor() {
 // ============================================
 // LIMIT SWITCH HANDLING WITH DEBOUNCING
 // ============================================
+// Minimum time (ms) motor must run before limit switches can stop it.
+// This prevents unreliable limit switches from killing the motor
+// immediately after a command is received (the primary cause of
+// "door not deploying" when MQTT commands are sent).
+#define LIMIT_GRACE_PERIOD_MS 750
+
 void checkLimitSwitches() {
   rawLimitOpen = (digitalRead(LIMIT_OPEN) == LOW);
   rawLimitClosed = (analogRead(LIMIT_CLOSED) < LIMIT_CLOSED_THRESHOLD);
@@ -637,13 +647,18 @@ void checkLimitSwitches() {
   } else if (rawLimitOpen != debouncedLimitOpen) {
     if (millis() - limitOpenStableTime >= LIMIT_DEBOUNCE_MS) {
       debouncedLimitOpen = rawLimitOpen;
-      
+
       if (debouncedLimitOpen) {
         publishLimitEvent("LIMIT_OPEN_HIT");
         if (currentState == DOOR_OPENING) {
-          mqttLog("[LIMIT] Door reached OPEN position");
-          stopMotor();
-          currentState = DOOR_OPEN;
+          unsigned long motorElapsed = millis() - motorStartTime;
+          if (motorElapsed >= LIMIT_GRACE_PERIOD_MS) {
+            mqttLog("[LIMIT] Door reached OPEN position");
+            stopMotor();
+            currentState = DOOR_OPEN;
+          } else {
+            mqttLogf("[LIMIT] OPEN hit ignored — motor only running %lums (grace: %dms)", motorElapsed, LIMIT_GRACE_PERIOD_MS);
+          }
         }
       } else {
         publishLimitEvent("LIMIT_OPEN_CLEAR");
@@ -658,13 +673,18 @@ void checkLimitSwitches() {
   } else if (rawLimitClosed != debouncedLimitClosed) {
     if (millis() - limitClosedStableTime >= LIMIT_DEBOUNCE_MS) {
       debouncedLimitClosed = rawLimitClosed;
-      
+
       if (debouncedLimitClosed) {
         publishLimitEvent("LIMIT_CLOSED_HIT");
         if (currentState == DOOR_CLOSING) {
-          mqttLog("[LIMIT] Door reached CLOSED position");
-          stopMotor();
-          currentState = DOOR_CLOSED;
+          unsigned long motorElapsed = millis() - motorStartTime;
+          if (motorElapsed >= LIMIT_GRACE_PERIOD_MS) {
+            mqttLog("[LIMIT] Door reached CLOSED position");
+            stopMotor();
+            currentState = DOOR_CLOSED;
+          } else {
+            mqttLogf("[LIMIT] CLOSED hit ignored — motor only running %lums (grace: %dms)", motorElapsed, LIMIT_GRACE_PERIOD_MS);
+          }
         }
       } else {
         publishLimitEvent("LIMIT_CLOSED_CLEAR");
@@ -673,14 +693,22 @@ void checkLimitSwitches() {
   }
 
   // Safety check: stop motor if limit hit while moving
-  if (currentState == DOOR_OPENING && debouncedLimitOpen) {
-    stopMotor();
-    currentState = DOOR_OPEN;
-  }
-
-  if (currentState == DOOR_CLOSING && debouncedLimitClosed) {
-    stopMotor();
-    currentState = DOOR_CLOSED;
+  // Only applies after grace period to prevent false-positive limit switches
+  // from killing the motor immediately after startup
+  if (currentState == DOOR_OPENING || currentState == DOOR_CLOSING) {
+    unsigned long motorElapsed = millis() - motorStartTime;
+    if (motorElapsed >= LIMIT_GRACE_PERIOD_MS) {
+      if (currentState == DOOR_OPENING && debouncedLimitOpen) {
+        mqttLogf("[SAFETY] Stopping — OPEN limit active after %lums", motorElapsed);
+        stopMotor();
+        currentState = DOOR_OPEN;
+      }
+      if (currentState == DOOR_CLOSING && debouncedLimitClosed) {
+        mqttLogf("[SAFETY] Stopping — CLOSED limit active after %lums", motorElapsed);
+        stopMotor();
+        currentState = DOOR_CLOSED;
+      }
+    }
   }
 }
 
