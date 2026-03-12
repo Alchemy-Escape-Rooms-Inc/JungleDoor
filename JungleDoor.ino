@@ -359,6 +359,15 @@ void mqtt_callback(char* topic, byte* payload, unsigned int length) {
     return;
   }
 
+  if (message == "PUZZLE_RESET") {
+    mqttLog("[CMD] PUZZLE_RESET — stopping motor, resetting to CLOSED");
+    stopMotor();
+    closeOverrunStart = 0;
+    currentState = DOOR_CLOSED;
+    send_status("CLOSED");
+    return;
+  }
+
   if (message == "RESET" || message == "REBOOT" || message == "RESTART") {
     mqttLog("[CMD] RESET received");
     send_status("RESETTING");
@@ -549,3 +558,4 @@ const char* getStateString(DoorState state) {
     default:             return "UNKNOWN";
   }
 }
+
