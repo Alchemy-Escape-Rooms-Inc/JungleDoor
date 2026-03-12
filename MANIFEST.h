@@ -29,8 +29,8 @@
  *    5. This file is the sole source of configuration values — the .ino
  *       file should reference these constants, not hardcode its own.
  *
- *  LAST UPDATED: 2026-03-11
- *  MANIFEST VERSION: 3.0
+ *  LAST UPDATED: 2026-03-12
+ *  MANIFEST VERSION: 3.1
  * ============================================================================
  */
 
@@ -138,7 +138,7 @@ inline constexpr unsigned long HEARTBEAT_INTERVAL = 30000;        // @HEARTBEAT_
 
 // ── Motor Driver (Cytron MD13S) ─────────────────────────────────────────────
 inline constexpr int DIR_PIN = 4;                                 // @PIN:DIR    | MD13S DIR — direction control (HIGH=open, LOW=close)
-inline constexpr int PWM_PIN = 5;                                 // @PIN:PWM    | MD13S PWM — speed control (0-255 via ledcWrite)
+inline constexpr int PWM_PIN = 6;                                 // @PIN:PWM    | MD13S PWM — speed control (0-255 via ledcWrite)
 
 // ── Limit Switches ──────────────────────────────────────────────────────────
 inline constexpr int LIMIT_OPEN   = 8;                            // @PIN:LIMIT_OPEN   | Mechanical switch, INPUT_PULLUP, active LOW
@@ -166,7 +166,7 @@ inline constexpr int PWM_RESOLUTION  = 8;                         // @PWM:RESOLU
 
 // ── Door Movement Timing ────────────────────────────────────────────────────
 inline constexpr int MOTOR_TIMEOUT_MS   = 6000;                   // @DOOR:TIMEOUT    | 6s safety cutoff if no limit switch hit
-inline constexpr int CLOSE_OVERRUN_MS   = 500;                    // @DOOR:OVERRUN    | 500ms extra motor run after CLOSED limit hit
+inline constexpr int CLOSE_OVERRUN_MS   = 200;                    // @DOOR:OVERRUN    | 500ms extra motor run after CLOSED limit hit
 
 // @END:MOTOR
 
@@ -182,7 +182,7 @@ inline constexpr int LIMIT_CLOSED_THRESHOLD = 3600;               // @THRESHOLD:
 //  Threshold at ~2.9V gives reliable detection margin.
 
 // ── Debounce ────────────────────────────────────────────────────────────────
-inline constexpr int LIMIT_DEBOUNCE_MS = 150;                     // @DEBOUNCE:LIMIT  | 150ms debounce for both limit switches
+inline constexpr int LIMIT_DEBOUNCE_MS = 30;                     // @DEBOUNCE:LIMIT  | 150ms debounce for both limit switches
 
 // @END:THRESHOLDS
 
@@ -373,3 +373,4 @@ inline constexpr unsigned long MQTT_RECONNECT_INTERVAL = 5000;    // @TIMING:MQT
 //   Physical Location: The Shattic — attic space above the Pirate Ship room
 //
 // @END:WIRING
+
