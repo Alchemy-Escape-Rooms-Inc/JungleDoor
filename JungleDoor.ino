@@ -5,24 +5,16 @@
  * ============================================
  *
  * Automatic sliding door controlled via MQTT.
+ * All configuration lives in MANIFEST.h.
  *
  * COMMANDS (via MermaidsTale/JungleDoor/command):
- *   OPEN   -> slides door open until OPEN limit switch
- *   CLOSE  -> slides door closed until CLOSED limit switch + 500ms overrun
- *   STOP   -> emergency stop
- *   PING   -> responds PONG
- *   STATUS -> responds with full diagnostic
- *   RESET  -> stops motor, reboots
- *
- * LIMIT SWITCH HIERARCHY:
- *   Open switch active           -> door is OPEN
- *   Closed switch active         -> door is CLOSED
- *   Both inactive                -> door is in the middle (STOPPED)
- *   Both active                  -> EMERGENCY STOP
- *
- * SAFETY:
- *   6-second timeout stops motor if no limit switch is hit
- *   Both switches active = immediate emergency stop
+ *   OPEN         -> slides door open until OPEN limit switch
+ *   CLOSE        -> slides door closed until CLOSED limit switch + overrun
+ *   STOP         -> emergency stop
+ *   PING         -> responds PONG
+ *   STATUS       -> responds with full diagnostic
+ *   PUZZLE_RESET -> stops motor, resets state to CLOSED
+ *   RESET        -> stops motor, reboots
  *
  * ============================================
  */
@@ -31,31 +23,7 @@
 #include <PubSubClient.h>
 #include "MANIFEST.h"
 
-// ============================================
-// CONFIGURATION FROM MANIFEST
-// ============================================
-#define DEVICE_NAME       manifest::DEVICE_NAME
-#define FIRMWARE_VERSION  manifest::FIRMWARE_VERSION
-
-const char* WIFI_SSID     = manifest::WIFI_SSID;
-const char* WIFI_PASSWORD = manifest::WIFI_PASSWORD;
-const char* MQTT_SERVER   = manifest::MQTT_SERVER;
-const int   MQTT_PORT     = manifest::MQTT_PORT;
-
-#define DIR_PIN              manifest::DIR_PIN
-#define PWM_PIN              manifest::PWM_PIN
-#define LIMIT_OPEN           manifest::LIMIT_OPEN
-#define LIMIT_CLOSED         manifest::LIMIT_CLOSED
-#define LIMIT_CLOSED_THRESHOLD manifest::LIMIT_CLOSED_THRESHOLD
-
-#define MOTOR_SPEED          manifest::MOTOR_SPEED
-#define DIR_OPEN             manifest::DIR_OPEN
-#define DIR_CLOSE            manifest::DIR_CLOSE
-#define PWM_FREQ             manifest::PWM_FREQ
-#define PWM_RESOLUTION       manifest::PWM_RESOLUTION
-#define LIMIT_DEBOUNCE_MS    manifest::LIMIT_DEBOUNCE_MS
-#define MOTOR_TIMEOUT_MS     manifest::MOTOR_TIMEOUT_MS
-#define CLOSE_OVERRUN_MS     manifest::CLOSE_OVERRUN_MS
+using namespace manifest;
 
 // ============================================
 // MQTT TOPICS (built at runtime)
@@ -83,17 +51,18 @@ DoorState previousState = DOOR_STOPPED;
 // ============================================
 // LIMIT SWITCH DEBOUNCING
 // ============================================
-bool rawLimitOpen = false;
-bool rawLimitClosed = false;
-bool debouncedLimitOpen = false;
-bool debouncedLimitClosed = false;
-unsigned long limitOpenStableTime = 0;
-unsigned long limitClosedStableTime = 0;
-bool lastRawLimitOpen = false;
-bool lastRawLimitClosed = false;
+struct LimitSwitch {
+  bool raw;
+  bool debounced;
+  bool lastRaw;
+  unsigned long stableTime;
+};
+
+LimitSwitch limitOpen  = {false, false, false, 0};
+LimitSwitch limitClose = {false, false, false, 0};
 
 // ============================================
-// TIMING
+// TIMING & GLOBALS
 // ============================================
 WiFiClient wifiClient;
 PubSubClient mqtt(wifiClient);
@@ -103,34 +72,9 @@ unsigned long lastWifiCheck = 0;
 unsigned long lastMqttReconnect = 0;
 unsigned long bootTime = 0;
 unsigned long motorStartTime = 0;
-unsigned long closeOverrunStart = 0;  // non-zero = overrun phase active
+unsigned long closeOverrunStart = 0;
 
-const unsigned long HEARTBEAT_INTERVAL     = manifest::HEARTBEAT_INTERVAL;
-const unsigned long WIFI_CHECK_INTERVAL    = manifest::WIFI_CHECK_INTERVAL;
-const unsigned long MQTT_RECONNECT_INTERVAL = manifest::MQTT_RECONNECT_INTERVAL;
-
-bool systemReady = false;
 char mqttLogBuffer[256];
-
-// ============================================
-// FUNCTION PROTOTYPES
-// ============================================
-void setup_wifi();
-void setup_mqtt();
-void mqtt_callback(char* topic, byte* payload, unsigned int length);
-void mqtt_reconnect();
-void send_heartbeat();
-void send_status(const char* status);
-void check_connections();
-void mqttLog(const char* message);
-void mqttLogf(const char* format, ...);
-void startOpening();
-void startClosing();
-void stopMotor();
-void checkLimitSwitches();
-void checkTimeout();
-void publishLimitEvent(const char* event);
-const char* getStateString(DoorState state);
 
 // ============================================
 // MQTT LOGGING
@@ -158,105 +102,124 @@ void publishLimitEvent(const char* event) {
 }
 
 // ============================================
-// SETUP
+// UTILITY
 // ============================================
-void setup() {
-  Serial.begin(115200);
-  delay(1000);
-
-  Serial.println("\n============================================");
-  Serial.println("   JUNGLE DOOR CONTROLLER - ESP32-S3");
-  Serial.println("============================================");
-  Serial.print("Firmware: ");
-  Serial.println(FIRMWARE_VERSION);
-  Serial.println("============================================\n");
-
-  // Build MQTT topics
-  mqtt_topic_command = "MermaidsTale/" + String(DEVICE_NAME) + "/command";
-  mqtt_topic_status  = "MermaidsTale/" + String(DEVICE_NAME) + "/status";
-  mqtt_topic_log     = "MermaidsTale/" + String(DEVICE_NAME) + "/log";
-  mqtt_topic_limit   = "MermaidsTale/" + String(DEVICE_NAME) + "/limit";
-
-  // Motor pins
-  pinMode(DIR_PIN, OUTPUT);
-  digitalWrite(DIR_PIN, LOW);
-  ledcAttach(PWM_PIN, PWM_FREQ, PWM_RESOLUTION);
-  ledcWrite(PWM_PIN, 0);
-
-  // Limit switch pins
-  pinMode(LIMIT_OPEN, INPUT_PULLUP);
-  pinMode(LIMIT_CLOSED, INPUT);
-
-  stopMotor();
-
-  // Read initial limit switch states
-  rawLimitOpen = (digitalRead(LIMIT_OPEN) == LOW);
-  rawLimitClosed = (analogRead(LIMIT_CLOSED) < LIMIT_CLOSED_THRESHOLD);
-  debouncedLimitOpen = rawLimitOpen;
-  debouncedLimitClosed = rawLimitClosed;
-  lastRawLimitOpen = rawLimitOpen;
-  lastRawLimitClosed = rawLimitClosed;
-  limitOpenStableTime = millis();
-  limitClosedStableTime = millis();
-
-  // Determine initial door position from limit switches
-  if (debouncedLimitOpen && debouncedLimitClosed) {
-    currentState = EMERGENCY_STOP;
-    Serial.println("[INIT] EMERGENCY — both limit switches active!");
-  } else if (debouncedLimitOpen) {
-    currentState = DOOR_OPEN;
-    Serial.println("[INIT] Door is OPEN");
-  } else if (debouncedLimitClosed) {
-    currentState = DOOR_CLOSED;
-    Serial.println("[INIT] Door is CLOSED");
-  } else {
-    currentState = DOOR_STOPPED;
-    Serial.println("[INIT] Door position UNKNOWN (no limit active)");
-  }
-  previousState = currentState;
-
-  setup_wifi();
-  setup_mqtt();
-  bootTime = millis();
-  systemReady = true;
-
-  if (mqtt.connected()) {
-    send_status("ONLINE");
-    mqttLogf("[READY] State: %s", getStateString(currentState));
+const char* getStateString(DoorState state) {
+  switch (state) {
+    case DOOR_CLOSED:    return "CLOSED";
+    case DOOR_OPEN:      return "OPEN";
+    case DOOR_OPENING:   return "OPENING";
+    case DOOR_CLOSING:   return "CLOSING";
+    case DOOR_STOPPED:   return "STOPPED";
+    case EMERGENCY_STOP: return "EMERGENCY";
+    default:             return "UNKNOWN";
   }
 }
 
+void send_status(const char* status) {
+  if (!mqtt.connected()) return;
+  mqtt.publish(mqtt_topic_status.c_str(), status, false);
+}
+
 // ============================================
-// MAIN LOOP
+// MOTOR CONTROL
 // ============================================
-void loop() {
-  check_connections();
+void stopMotor() {
+  ledcWrite(PWM_PIN, 0);
+  closeOverrunStart = 0;
+}
 
-  if (mqtt.connected()) {
-    mqtt.loop();
-  }
-
-  send_heartbeat();
-  checkLimitSwitches();
-  checkTimeout();
-
-  // Handle close overrun: motor continues 500ms after CLOSED limit hit
-  if (closeOverrunStart > 0 && millis() - closeOverrunStart >= CLOSE_OVERRUN_MS) {
-    mqttLog("[OVERRUN] Close overrun complete — stopping motor");
+void startOpening() {
+  if (limitOpen.debounced) {
+    currentState = DOOR_OPEN;
     stopMotor();
-    closeOverrunStart = 0;
+    return;
+  }
+  mqttLog("[MOTOR] Opening");
+  closeOverrunStart = 0;
+  limitOpen.debounced = false;
+  limitOpen.raw = false;
+  limitOpen.lastRaw = false;
+  currentState = DOOR_OPENING;
+  motorStartTime = millis();
+  digitalWrite(DIR_PIN, DIR_OPEN);
+  ledcWrite(PWM_PIN, MOTOR_SPEED);
+}
+
+void startClosing() {
+  if (limitClose.debounced) {
     currentState = DOOR_CLOSED;
-    send_status("CLOSED");
+    stopMotor();
+    return;
+  }
+  mqttLog("[MOTOR] Closing");
+  closeOverrunStart = 0;
+  limitClose.debounced = false;
+  limitClose.raw = false;
+  limitClose.lastRaw = false;
+  currentState = DOOR_CLOSING;
+  motorStartTime = millis();
+  digitalWrite(DIR_PIN, DIR_CLOSE);
+  ledcWrite(PWM_PIN, MOTOR_SPEED);
+}
+
+// ============================================
+// TIMEOUT — safety cutoff
+// ============================================
+void checkTimeout() {
+  if (currentState != DOOR_OPENING && currentState != DOOR_CLOSING) return;
+  if (millis() - motorStartTime < MOTOR_TIMEOUT_MS) return;
+
+  mqttLogf("[TIMEOUT] Motor ran %dms without limit switch — stopping", MOTOR_TIMEOUT_MS);
+  stopMotor();
+  currentState = DOOR_STOPPED;
+  send_status("TIMEOUT");
+}
+
+// ============================================
+// LIMIT SWITCH HANDLING
+// ============================================
+bool debounce(LimitSwitch &sw, bool newRaw) {
+  sw.raw = newRaw;
+  if (sw.raw != sw.lastRaw) {
+    sw.lastRaw = sw.raw;
+    sw.stableTime = millis();
+  } else if (sw.raw != sw.debounced && millis() - sw.stableTime >= LIMIT_DEBOUNCE_MS) {
+    sw.debounced = sw.raw;
+    return true;  // state changed
+  }
+  return false;
+}
+
+void checkLimitSwitches() {
+  if (debounce(limitOpen, digitalRead(LIMIT_OPEN) == LOW)) {
+    publishLimitEvent(limitOpen.debounced ? "LIMIT_OPEN_HIT" : "LIMIT_OPEN_CLEAR");
+  }
+  if (debounce(limitClose, analogRead(LIMIT_CLOSED) < LIMIT_CLOSED_THRESHOLD)) {
+    publishLimitEvent(limitClose.debounced ? "LIMIT_CLOSED_HIT" : "LIMIT_CLOSED_CLEAR");
   }
 
-  // Publish state changes
-  if (currentState != previousState) {
-    mqttLogf("[STATE] %s -> %s", getStateString(previousState), getStateString(currentState));
-    previousState = currentState;
-    send_status(getStateString(currentState));
+  // EMERGENCY: both switches active
+  if (limitOpen.debounced && limitClose.debounced) {
+    if (currentState != EMERGENCY_STOP) {
+      mqttLog("[EMERGENCY] Both limit switches active — stopping motor!");
+      stopMotor();
+      currentState = EMERGENCY_STOP;
+      send_status("EMERGENCY");
+    }
+    return;
   }
 
-  delay(10);
+  if (currentState == DOOR_OPENING && limitOpen.debounced) {
+    mqttLog("[LIMIT] Door reached OPEN position");
+    stopMotor();
+    currentState = DOOR_OPEN;
+  }
+
+  if (currentState == DOOR_CLOSING && limitClose.debounced && closeOverrunStart == 0) {
+    mqttLogf("[LIMIT] Door reached CLOSED position — running %dms overrun", CLOSE_OVERRUN_MS);
+    closeOverrunStart = millis();
+  }
 }
 
 // ============================================
@@ -332,10 +295,11 @@ void mqtt_reconnect() {
 }
 
 void mqtt_callback(char* topic, byte* payload, unsigned int length) {
-  String message;
-  for (unsigned int i = 0; i < length; i++) {
-    message += (char)payload[i];
-  }
+  if (length >= sizeof(mqttLogBuffer)) length = sizeof(mqttLogBuffer) - 1;
+  memcpy(mqttLogBuffer, payload, length);
+  mqttLogBuffer[length] = '\0';
+
+  String message(mqttLogBuffer);
   message.trim();
   message.toUpperCase();
 
@@ -349,20 +313,19 @@ void mqtt_callback(char* topic, byte* payload, unsigned int length) {
 
   if (message == "STATUS") {
     unsigned long uptime = (millis() - bootTime) / 1000;
-    String info = String(getStateString(currentState));
-    info += "|UP:" + String(uptime) + "s";
-    info += "|RSSI:" + String(WiFi.RSSI());
-    info += "|VER:" + String(FIRMWARE_VERSION);
-    info += "|LIMIT_OPEN:" + String(debouncedLimitOpen ? "ACTIVE" : "CLEAR");
-    info += "|LIMIT_CLOSED:" + String(debouncedLimitClosed ? "ACTIVE" : "CLEAR");
-    send_status(info.c_str());
+    snprintf(mqttLogBuffer, sizeof(mqttLogBuffer),
+      "%s|UP:%lus|RSSI:%d|VER:%s|LIMIT_OPEN:%s|LIMIT_CLOSED:%s",
+      getStateString(currentState), uptime, WiFi.RSSI(),
+      FIRMWARE_VERSION,
+      limitOpen.debounced ? "ACTIVE" : "CLEAR",
+      limitClose.debounced ? "ACTIVE" : "CLEAR");
+    send_status(mqttLogBuffer);
     return;
   }
 
   if (message == "PUZZLE_RESET") {
     mqttLog("[CMD] PUZZLE_RESET — stopping motor, resetting to CLOSED");
     stopMotor();
-    closeOverrunStart = 0;
     currentState = DOOR_CLOSED;
     send_status("CLOSED");
     return;
@@ -409,7 +372,6 @@ void mqtt_callback(char* topic, byte* payload, unsigned int length) {
   if (message == "STOP") {
     mqttLog("[CMD] STOP");
     stopMotor();
-    closeOverrunStart = 0;
     currentState = DOOR_STOPPED;
     send_status("STOPPED");
     return;
@@ -418,144 +380,107 @@ void mqtt_callback(char* topic, byte* payload, unsigned int length) {
   mqttLogf("[CMD] Unknown: %s", message.c_str());
 }
 
-void send_status(const char* status) {
-  if (!mqtt.connected()) return;
-  mqtt.publish(mqtt_topic_status.c_str(), status, false);
-}
-
 void send_heartbeat() {
   if (!mqtt.connected()) return;
   if (millis() - lastHeartbeat < HEARTBEAT_INTERVAL) return;
   lastHeartbeat = millis();
 
   unsigned long uptime = (millis() - bootTime) / 1000;
-  String hb = "HEARTBEAT:";
-  hb += getStateString(currentState);
-  hb += ":UP" + String(uptime) + "s";
-  hb += ":RSSI" + String(WiFi.RSSI());
-  mqtt.publish(mqtt_topic_status.c_str(), hb.c_str(), false);
+  snprintf(mqttLogBuffer, sizeof(mqttLogBuffer),
+    "HEARTBEAT:%s:UP%lus:RSSI%d",
+    getStateString(currentState), uptime, WiFi.RSSI());
+  mqtt.publish(mqtt_topic_status.c_str(), mqttLogBuffer, false);
 }
 
 // ============================================
-// MOTOR CONTROL
+// SETUP
 // ============================================
-void startOpening() {
-  if (debouncedLimitOpen) {
-    currentState = DOOR_OPEN;
-    stopMotor();
-    return;
-  }
+void setup() {
+  Serial.begin(115200);
+  delay(1000);
 
-  mqttLog("[MOTOR] Opening");
-  closeOverrunStart = 0;
-  currentState = DOOR_OPENING;
-  motorStartTime = millis();
-  digitalWrite(DIR_PIN, DIR_OPEN);
-  ledcWrite(PWM_PIN, MOTOR_SPEED);
-  send_status("OPENING");
-}
+  Serial.println("\n============================================");
+  Serial.println("   JUNGLE DOOR CONTROLLER - ESP32-S3");
+  Serial.println("============================================");
+  Serial.print("Firmware: ");
+  Serial.println(FIRMWARE_VERSION);
+  Serial.println("============================================\n");
 
-void startClosing() {
-  if (debouncedLimitClosed) {
-    currentState = DOOR_CLOSED;
-    stopMotor();
-    return;
-  }
+  // Build MQTT topics
+  mqtt_topic_command = "MermaidsTale/" + String(DEVICE_NAME) + "/command";
+  mqtt_topic_status  = "MermaidsTale/" + String(DEVICE_NAME) + "/status";
+  mqtt_topic_log     = "MermaidsTale/" + String(DEVICE_NAME) + "/log";
+  mqtt_topic_limit   = "MermaidsTale/" + String(DEVICE_NAME) + "/limit";
 
-  mqttLog("[MOTOR] Closing");
-  closeOverrunStart = 0;
-  currentState = DOOR_CLOSING;
-  motorStartTime = millis();
-  digitalWrite(DIR_PIN, DIR_CLOSE);
-  ledcWrite(PWM_PIN, MOTOR_SPEED);
-  send_status("CLOSING");
-}
-
-void stopMotor() {
+  // Motor pins
+  pinMode(DIR_PIN, OUTPUT);
+  digitalWrite(DIR_PIN, LOW);
+  ledcAttach(PWM_PIN, PWM_FREQ, PWM_RESOLUTION);
   ledcWrite(PWM_PIN, 0);
-}
 
-// ============================================
-// TIMEOUT — 6 second safety cutoff
-// ============================================
-void checkTimeout() {
-  if (currentState != DOOR_OPENING && currentState != DOOR_CLOSING) return;
-  if (millis() - motorStartTime < MOTOR_TIMEOUT_MS) return;
+  // Limit switch pins
+  pinMode(LIMIT_OPEN, INPUT_PULLUP);
+  pinMode(LIMIT_CLOSED, INPUT);
 
-  mqttLogf("[TIMEOUT] Motor ran %dms without limit switch — stopping", MOTOR_TIMEOUT_MS);
-  stopMotor();
-  closeOverrunStart = 0;
-  currentState = DOOR_STOPPED;
-  send_status("TIMEOUT");
-}
+  // Read initial limit switch states
+  limitOpen.raw  = (digitalRead(LIMIT_OPEN) == LOW);
+  limitClose.raw = (analogRead(LIMIT_CLOSED) < LIMIT_CLOSED_THRESHOLD);
+  limitOpen.debounced  = limitOpen.raw;
+  limitClose.debounced = limitClose.raw;
+  limitOpen.lastRaw    = limitOpen.raw;
+  limitClose.lastRaw   = limitClose.raw;
+  limitOpen.stableTime  = millis();
+  limitClose.stableTime = millis();
 
-// ============================================
-// LIMIT SWITCH HANDLING
-// ============================================
-void checkLimitSwitches() {
-  rawLimitOpen = (digitalRead(LIMIT_OPEN) == LOW);
-  rawLimitClosed = (analogRead(LIMIT_CLOSED) < LIMIT_CLOSED_THRESHOLD);
-
-  // Debounce OPEN limit
-  if (rawLimitOpen != lastRawLimitOpen) {
-    lastRawLimitOpen = rawLimitOpen;
-    limitOpenStableTime = millis();
-  } else if (rawLimitOpen != debouncedLimitOpen) {
-    if (millis() - limitOpenStableTime >= LIMIT_DEBOUNCE_MS) {
-      debouncedLimitOpen = rawLimitOpen;
-      publishLimitEvent(debouncedLimitOpen ? "LIMIT_OPEN_HIT" : "LIMIT_OPEN_CLEAR");
-    }
-  }
-
-  // Debounce CLOSED limit
-  if (rawLimitClosed != lastRawLimitClosed) {
-    lastRawLimitClosed = rawLimitClosed;
-    limitClosedStableTime = millis();
-  } else if (rawLimitClosed != debouncedLimitClosed) {
-    if (millis() - limitClosedStableTime >= LIMIT_DEBOUNCE_MS) {
-      debouncedLimitClosed = rawLimitClosed;
-      publishLimitEvent(debouncedLimitClosed ? "LIMIT_CLOSED_HIT" : "LIMIT_CLOSED_CLEAR");
-    }
-  }
-
-  // EMERGENCY: both switches active = something is very wrong
-  if (debouncedLimitOpen && debouncedLimitClosed) {
-    if (currentState != EMERGENCY_STOP) {
-      mqttLog("[EMERGENCY] Both limit switches active — stopping motor!");
-      stopMotor();
-      closeOverrunStart = 0;
-      currentState = EMERGENCY_STOP;
-      send_status("EMERGENCY");
-    }
-    return;
-  }
-
-  // Act on limit switches during movement
-  if (currentState == DOOR_OPENING && debouncedLimitOpen) {
-    mqttLog("[LIMIT] Door reached OPEN position");
-    stopMotor();
+  // Determine initial door position from limit switches
+  if (limitOpen.debounced && limitClose.debounced) {
+    currentState = EMERGENCY_STOP;
+    Serial.println("[INIT] EMERGENCY — both limit switches active!");
+  } else if (limitOpen.debounced) {
     currentState = DOOR_OPEN;
+    Serial.println("[INIT] Door is OPEN");
+  } else if (limitClose.debounced) {
+    currentState = DOOR_CLOSED;
+    Serial.println("[INIT] Door is CLOSED");
+  } else {
+    currentState = DOOR_STOPPED;
+    Serial.println("[INIT] Door position UNKNOWN (no limit active)");
   }
+  previousState = currentState;
 
-  if (currentState == DOOR_CLOSING && debouncedLimitClosed && closeOverrunStart == 0) {
-    mqttLog("[LIMIT] Door reached CLOSED position — running 500ms overrun");
-    closeOverrunStart = millis();
-    // Motor keeps running — loop() will stop it after CLOSE_OVERRUN_MS
-  }
+  setup_wifi();
+  setup_mqtt();
+  bootTime = millis();
 }
 
 // ============================================
-// UTILITY
+// MAIN LOOP
 // ============================================
-const char* getStateString(DoorState state) {
-  switch (state) {
-    case DOOR_CLOSED:    return "CLOSED";
-    case DOOR_OPEN:      return "OPEN";
-    case DOOR_OPENING:   return "OPENING";
-    case DOOR_CLOSING:   return "CLOSING";
-    case DOOR_STOPPED:   return "STOPPED";
-    case EMERGENCY_STOP: return "EMERGENCY";
-    default:             return "UNKNOWN";
-  }
-}
+void loop() {
+  check_connections();
 
+  if (mqtt.connected()) {
+    mqtt.loop();
+  }
+
+  send_heartbeat();
+  checkLimitSwitches();
+  checkTimeout();
+
+  // Handle close overrun: motor continues after CLOSED limit hit
+  if (closeOverrunStart > 0 && millis() - closeOverrunStart >= CLOSE_OVERRUN_MS) {
+    mqttLog("[OVERRUN] Close overrun complete — stopping motor");
+    stopMotor();
+    currentState = DOOR_CLOSED;
+    send_status("CLOSED");
+  }
+
+  // Publish state changes
+  if (currentState != previousState) {
+    mqttLogf("[STATE] %s -> %s", getStateString(previousState), getStateString(currentState));
+    previousState = currentState;
+    send_status(getStateString(currentState));
+  }
+
+  delay(10);
+}
