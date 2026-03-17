@@ -142,7 +142,7 @@ inline constexpr int PWM_PIN = 6;                                 // @PIN:PWM   
 
 // ── Limit Switches ──────────────────────────────────────────────────────────
 inline constexpr int LIMIT_OPEN   = 8;                            // @PIN:LIMIT_OPEN   | Mechanical switch, INPUT_PULLUP, active LOW
-inline constexpr int LIMIT_CLOSED = 19;                           // @PIN:LIMIT_CLOSED | Laser beam sensor, analog read, active below threshold
+inline constexpr int LIMIT_CLOSED = 7;                            // @PIN:LIMIT_CLOSED | Laser beam sensor, analog read, active below threshold
 
 // @END:PINS
 
@@ -220,7 +220,7 @@ inline constexpr unsigned long MQTT_RECONNECT_INTERVAL = 5000;    // @TIMING:MQT
 //
 // @COMPONENT:  Laser Beam Sensor (Closed Position)
 //   @PURPOSE:  Detects when door has fully closed
-//   @DETAIL:   Pin 19, analog read. Laser beam breaks when door panel is
+//   @DETAIL:   Pin 7, analog read. Laser beam breaks when door panel is
 //              present (blocked ≈ 2.58V/3200, clear ≈ 3.3V/4095, threshold
 //              at 3600). Hidden to preserve the secret door illusion — no
 //              visible mechanical switch on the player-facing wall.
@@ -343,7 +343,7 @@ inline constexpr unsigned long MQTT_RECONNECT_INTERVAL = 5000;    // @TIMING:MQT
 //                                 Switch connects pin to GND when triggered
 //                                 INPUT_PULLUP, active LOW
 //
-//   ESP32-S3 Pin 19 ───────────── Laser Beam Sensor (CLOSED position)
+//   ESP32-S3 Pin 7  ───────────── Laser Beam Sensor (CLOSED position)
 //                                 Analog read: ~3200 blocked, ~4095 clear
 //                                 Threshold: 3600
 //
