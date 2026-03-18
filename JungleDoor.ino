@@ -137,9 +137,9 @@ void startOpening() {
   }
   mqttLog("[MOTOR] Opening");
   closeOverrunStart = 0;
-  limitOpen.debounced = false;
-  limitOpen.raw = false;
-  limitOpen.lastRaw = false;
+  limitClose.debounced = false;
+  limitClose.raw = false;
+  limitClose.lastRaw = false;
   currentState = DOOR_OPENING;
   motorStartTime = millis();
   digitalWrite(DIR_PIN, DIR_OPEN);
@@ -154,9 +154,9 @@ void startClosing() {
   }
   mqttLog("[MOTOR] Closing");
   closeOverrunStart = 0;
-  limitClose.debounced = false;
-  limitClose.raw = false;
-  limitClose.lastRaw = false;
+  limitOpen.debounced = false;
+  limitOpen.raw = false;
+  limitOpen.lastRaw = false;
   currentState = DOOR_CLOSING;
   motorStartTime = millis();
   digitalWrite(DIR_PIN, DIR_CLOSE);
@@ -173,6 +173,7 @@ void checkTimeout() {
   mqttLogf("[TIMEOUT] Motor ran %dms without limit switch — stopping", MOTOR_TIMEOUT_MS);
   stopMotor();
   currentState = DOOR_STOPPED;
+  previousState = DOOR_STOPPED;
   send_status("TIMEOUT");
 }
 
@@ -326,6 +327,7 @@ void mqtt_callback(char* topic, byte* payload, unsigned int length) {
     mqttLog("[CMD] PUZZLE_RESET — stopping motor, resetting to CLOSED");
     stopMotor();
     currentState = DOOR_CLOSED;
+    previousState = DOOR_CLOSED;
     send_status("CLOSED");
     return;
   }
@@ -372,6 +374,7 @@ void mqtt_callback(char* topic, byte* payload, unsigned int length) {
     mqttLog("[CMD] STOP");
     stopMotor();
     currentState = DOOR_STOPPED;
+    previousState = DOOR_STOPPED;
     send_status("STOPPED");
     return;
   }
@@ -471,6 +474,7 @@ void loop() {
     mqttLog("[OVERRUN] Close overrun complete — stopping motor");
     stopMotor();
     currentState = DOOR_CLOSED;
+    previousState = DOOR_CLOSED;
     send_status("CLOSED");
   }
 
