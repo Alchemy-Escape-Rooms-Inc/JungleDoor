@@ -192,33 +192,32 @@ bool debounce(LimitSwitch &sw, bool newRaw) {
 }
 
 void checkLimitSwitches() {
-  if (debounce(limitOpen, digitalRead(LIMIT_OPEN) == LOW)) {
-    publishLimitEvent(limitOpen.debounced ? "LIMIT_OPEN_HIT" : "LIMIT_OPEN_CLEAR");
-  }
-  if (debounce(limitClose, analogRead(LIMIT_CLOSED) < LIMIT_CLOSED_THRESHOLD)) {
-    publishLimitEvent(limitClose.debounced ? "LIMIT_CLOSED_HIT" : "LIMIT_CLOSED_CLEAR");
-  }
-
-  // EMERGENCY: both switches active
-  if (limitOpen.debounced && limitClose.debounced) {
-    if (currentState != EMERGENCY_STOP) {
-      mqttLog("[EMERGENCY] Both limit switches active — stopping motor!");
-      stopMotor();
-      currentState = EMERGENCY_STOP;
-      send_status("EMERGENCY");
+  // Only read/debounce the limit switch relevant to current direction
+  if (currentState == DOOR_OPENING) {
+    if (debounce(limitOpen, digitalRead(LIMIT_OPEN) == LOW)) {
+      publishLimitEvent(limitOpen.debounced ? "LIMIT_OPEN_HIT" : "LIMIT_OPEN_CLEAR");
     }
-    return;
-  }
-
-  if (currentState == DOOR_OPENING && limitOpen.debounced) {
-    mqttLog("[LIMIT] Door reached OPEN position");
-    stopMotor();
-    currentState = DOOR_OPEN;
-  }
-
-  if (currentState == DOOR_CLOSING && limitClose.debounced && closeOverrunStart == 0) {
-    mqttLogf("[LIMIT] Door reached CLOSED position — running %dms overrun", CLOSE_OVERRUN_MS);
-    closeOverrunStart = millis();
+    if (limitOpen.debounced) {
+      mqttLog("[LIMIT] Door reached OPEN position");
+      stopMotor();
+      currentState = DOOR_OPEN;
+    }
+  } else if (currentState == DOOR_CLOSING) {
+    if (debounce(limitClose, analogRead(LIMIT_CLOSED) < LIMIT_CLOSED_THRESHOLD)) {
+      publishLimitEvent(limitClose.debounced ? "LIMIT_CLOSED_HIT" : "LIMIT_CLOSED_CLEAR");
+    }
+    if (limitClose.debounced && closeOverrunStart == 0) {
+      mqttLogf("[LIMIT] Door reached CLOSED position — running %dms overrun", CLOSE_OVERRUN_MS);
+      closeOverrunStart = millis();
+    }
+  } else {
+    // When not moving, read both switches for state awareness
+    if (debounce(limitOpen, digitalRead(LIMIT_OPEN) == LOW)) {
+      publishLimitEvent(limitOpen.debounced ? "LIMIT_OPEN_HIT" : "LIMIT_OPEN_CLEAR");
+    }
+    if (debounce(limitClose, analogRead(LIMIT_CLOSED) < LIMIT_CLOSED_THRESHOLD)) {
+      publishLimitEvent(limitClose.debounced ? "LIMIT_CLOSED_HIT" : "LIMIT_CLOSED_CLEAR");
+    }
   }
 }
 
