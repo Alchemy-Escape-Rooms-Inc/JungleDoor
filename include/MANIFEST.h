@@ -29,8 +29,8 @@
  *    5. This file is the sole source of configuration values — the .ino
  *       file should reference these constants, not hardcode its own.
  *
- *  LAST UPDATED: 2026-03-17
- *  MANIFEST VERSION: 3.3
+ *  LAST UPDATED: 2026-04-09
+ *  MANIFEST VERSION: 3.4
  * ============================================================================
  */
 
@@ -58,7 +58,7 @@
 //
 // @ROOM:             Pirate Ship (transitions to Jungle)
 // @BOARD:            ESP32-S3
-// @FRAMEWORK:        Arduino IDE (.ino)
+// @FRAMEWORK:        Arduino (PlatformIO)
 // @REPO:             https://github.com/Alchemy-Escape-Rooms-Inc/JungleDoor
 // @BUILD_STATUS:     INSTALLED
 // @CODE_HEALTH:      GOOD
@@ -69,7 +69,7 @@ namespace manifest {
 
 // ── Device Identity ─────────────────────────────────────────────────────────
 inline constexpr const char* DEVICE_NAME    = "JungleDoor";       // @DEVICE_NAME  (MQTT client ID + topic base)
-inline constexpr const char* FIRMWARE_VERSION = "3.3.0";          // @FIRMWARE_VERSION
+inline constexpr const char* FIRMWARE_VERSION = "3.4.0";          // @FIRMWARE_VERSION
 
 
 // ============================================================================
@@ -103,9 +103,10 @@ inline constexpr unsigned long HEARTBEAT_INTERVAL = 30000;        // @HEARTBEAT_
 //
 //  SUPPORTED COMMANDS (via /command topic):
 //  @COMMAND:  PING          | Responds PONG on /status topic          | Health check
-//  @COMMAND:  STATUS        | Sends state, uptime, RSSI, version     | Full diagnostic
-//  @COMMAND:  PUZZLE_RESET  | Stops motor, resets state to CLOSED     | Watchtower v2.0
-//  @COMMAND:  RESET         | Stops motor, reboots ESP32              | Also accepts REBOOT, RESTART
+//  @COMMAND:  STATUS        | Sends state, uptime, RSSI, version      | Full diagnostic
+//  @COMMAND:  PUZZLE_RESET  | Stops motor, re-reads limit switches,   | Watchtower v2.0
+//                          | syncs state to physical position, OK    |
+//  @COMMAND:  RESET         | Responds OK, stops motor, reboots ESP32 | Also accepts REBOOT, RESTART
 //  @COMMAND:  OPEN          | Opens the door at constant safe speed
 //  @COMMAND:  CLOSE         | Closes the door at constant safe speed
 //  @COMMAND:  STOP          | Emergency stop — kills motor immediately
@@ -125,7 +126,7 @@ inline constexpr unsigned long HEARTBEAT_INTERVAL = 30000;        // @HEARTBEAT_
 //  @STATUS_MSG:  STOPPED         | Motor stopped via STOP command
 //  @STATUS_MSG:  ALREADY_OPEN    | OPEN command received but door already open
 //  @STATUS_MSG:  ALREADY_CLOSED  | CLOSE command received but door already closed
-//  @STATUS_MSG:  RESETTING       | RESET command received, about to reboot
+//  @STATUS_MSG:  OK              | Acknowledgement for RESET / PUZZLE_RESET
 //  @STATUS_MSG:  HEARTBEAT:...   | Periodic heartbeat with state, uptime, RSSI
 //
 // @END:NETWORK
@@ -161,8 +162,7 @@ inline constexpr int PWM_FREQ        = 5000;                      // @PWM:FREQ  
 inline constexpr int PWM_RESOLUTION  = 8;                         // @PWM:RESOLUTION | 8-bit (0-255)
 
 // ── Door Movement Timing ────────────────────────────────────────────────────
-inline constexpr int MOTOR_TIMEOUT_MS   = 6000;                   // @DOOR:TIMEOUT    | 6s safety cutoff if no limit switch hit
-inline constexpr int CLOSE_OVERRUN_MS   = 200;                    // @DOOR:OVERRUN    | 200ms extra motor run after CLOSED limit hit
+inline constexpr int MOTOR_TIMEOUT_MS   = 10000;                  // @DOOR:TIMEOUT    | 10s emergency cutoff — only fires if a limit switch fails
 
 // @END:MOTOR
 
@@ -210,7 +210,7 @@ inline constexpr unsigned long MQTT_RECONNECT_INTERVAL = 5000;    // @TIMING:MQT
 // @COMPONENT:  DC Sliding Door Motor
 //   @PURPOSE:  Physically moves the door panel along a track
 //   @DETAIL:   Driven by MD13S. Opens on DIR=HIGH, closes on DIR=LOW.
-//              6s safety timeout. Close adds 200ms overrun past limit.
+//              10s emergency timeout — only fires if a limit switch fails.
 //
 // @COMPONENT:  Mechanical Limit Switch (Open Position)
 //   @PURPOSE:  Detects when door has fully opened
@@ -263,14 +263,13 @@ inline constexpr unsigned long MQTT_RECONNECT_INTERVAL = 5000;    // @TIMING:MQT
 //   Send "OPEN" to MermaidsTale/JungleDoor/command
 //   Motor runs at constant speed (PWM 150) until OPEN limit switch
 //   Publishes "OPENING" immediately, then "OPEN" when limit hit
-//   6-second safety timeout if limit switch never triggers
+//   10-second EMERGENCY timeout if limit switch never triggers (limit switch failure)
 //
 // @OPERATION:CLOSE
 //   Send "CLOSE" to MermaidsTale/JungleDoor/command
 //   Motor runs at constant speed until CLOSED limit switch
-//   After CLOSED limit hit, motor continues 200ms to seat the door
-//   Publishes "CLOSING" immediately, then "CLOSED" after overrun
-//   6-second safety timeout if limit switch never triggers
+//   Publishes "CLOSING" immediately, then "CLOSED" when limit hit
+//   10-second EMERGENCY timeout if limit switch never triggers (limit switch failure)
 //
 // @OPERATION:EMERGENCY_STOP
 //   Send "STOP" to MermaidsTale/JungleDoor/command
