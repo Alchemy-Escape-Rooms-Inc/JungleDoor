@@ -26,6 +26,10 @@
 
 using namespace manifest;
 
+// Forward declarations
+void mqtt_callback(char* topic, byte* payload, unsigned int length);
+void mqtt_reconnect();
+
 // ============================================
 // MQTT TOPICS (built at runtime)
 // ============================================
