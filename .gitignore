@@ -1,2 +1,5 @@
 .claude/settings.local.json
 .pio/
+.gitignore
+*.swp
+.DS_Store
