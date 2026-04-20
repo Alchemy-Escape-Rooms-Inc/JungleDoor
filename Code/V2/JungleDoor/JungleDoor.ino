@@ -228,25 +228,39 @@ void stopDoor(){
 }
 
 bool checkLimitSwitch(bool dir){
+  // Edge-triggered publish: the "limit reached" message is sent only when
+  // the switch transitions from not-triggered -> triggered. Previously this
+  // function fired the publish every loop iteration while the limit was
+  // held, producing ~2.9M duplicate MQTT messages per hour under the AI
+  // Character session log. limitOpenTriggered / limitCloseTriggered now
+  // gate the publish rather than just being tracked and ignored.
   bool result;
   if(!dir){
     result = digitalRead(LIMIT_OPEN_PIN); //Open limit is triggered low
                                           //make sure that the open conditions are met when triggered
     if(!result){
-      limitOpenTriggered = true;
       stopDoor();
+      if(!limitOpenTriggered){
+        mqttClient.publish(MQTT_TOPIC_MESSAGE,"Open limit is reached. Door is stopped.");
+      }
+      limitOpenTriggered = true;
       limitCloseTriggered = false;
-      mqttClient.publish(MQTT_TOPIC_MESSAGE,"Open limit is reached. Door is stopped.");
+    } else {
+      limitOpenTriggered = false;
     }
 
   }else{
     result =  !(analogRead(LIMIT_CLOSE_PIN) < LIMIT_CLOSE_THRESHOLD); //Close limit is triggered with smaller value than threshold
                                                                       //make sure that the close conditions are met when triggereed
     if(!result){
-      limitCloseTriggered = true;
       stopDoor();
+      if(!limitCloseTriggered){
+        mqttClient.publish(MQTT_TOPIC_MESSAGE,"Close limit is reached. Door is closed.");
+      }
+      limitCloseTriggered = true;
       limitOpenTriggered = false;
-      mqttClient.publish(MQTT_TOPIC_MESSAGE,"Close limit is reached. Door is closed.");
+    } else {
+      limitCloseTriggered = false;
     }
 
   }
