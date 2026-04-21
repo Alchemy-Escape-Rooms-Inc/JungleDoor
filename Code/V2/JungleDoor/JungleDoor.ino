@@ -5,7 +5,7 @@
 #include <WiFi.h>
 #include <PubSubClient.h>
 
-#define VERSION "2.0.0"
+#define VERSION "2.1.0"
 
 #define GAME_NAME "MermaidsTale"
 #define PROP_NAME "JungleDoor"
@@ -15,6 +15,13 @@
 #define MQTT_TOPIC_LOG      "MermaidsTale/JungleDoor/log"
 #define MQTT_TOPIC_MESSAGE  "MermaidsTale/JungleDoor/message"
 #define MQTT_TOPIC_SYSTEM   "MermaidsTale/JungleDoor/system"
+#define MQTT_TOPIC_STATE    "MermaidsTale/JungleDoor/state"
+#define MQTT_TOPIC_SAFETY   "MermaidsTale/JungleDoor/safety"
+#define MQTT_TOPIC_VERSION  "MermaidsTale/JungleDoor/version"
+#define MQTT_TOPIC_DEVICE   "MermaidsTale/JungleDoor/device"
+#define MQTT_TOPIC_INFO     "MermaidsTale/JungleDoor/info"
+#define MQTT_TOPIC_LASTERROR "MermaidsTale/JungleDoor/lastError"
+#define MQTT_TOPIC_UPTIME   "MermaidsTale/JungleDoor/uptime"
 
 #define DIR_PIN 4
 #define DIR_OPEN LOW
@@ -36,6 +43,9 @@
 //===================================
 const unsigned long heartBeatPulse = 5 * 1000UL;
 unsigned long lastTime = 0;
+unsigned long bootTime = 0;
+String lastError = "NONE";
+String currentState = "IDLE";
 
 
 
@@ -83,14 +93,21 @@ void connectMQTT() {
     clientId += "_";
     clientId += String(random(0xffff), HEX);
 
-    if (mqttClient.connect(clientId.c_str())) {
+    // Connect with LWT (Last Will and Testament) for offline detection
+    if (mqttClient.connect(clientId.c_str(), NULL, NULL, MQTT_TOPIC_STATUS, 1, true, "OFFLINE")) {
       Serial.println("connected!");
 
       // Subscribe to command topic
       mqttClient.subscribe(MQTT_TOPIC_COMMAND);
 
-      // Announce we're online
-      mqttClient.publish(MQTT_TOPIC_STATUS, "ONLINE");
+      // Publish retained status topics
+      mqttClient.publish(MQTT_TOPIC_STATUS, "ONLINE", true);
+      mqttClient.publish(MQTT_TOPIC_VERSION, VERSION, true);
+      mqttClient.publish(MQTT_TOPIC_DEVICE, PROP_NAME, true);
+      mqttClient.publish(MQTT_TOPIC_STATE, currentState.c_str(), true);
+      mqttClient.publish(MQTT_TOPIC_SAFETY, "OK", true);
+      mqttClient.publish(MQTT_TOPIC_LASTERROR, lastError.c_str(), true);
+
       mqttLogf("%s v%s online", PROP_NAME, VERSION);
 
     } else {
@@ -182,15 +199,36 @@ void mqttLogf(const char* format, ...) {
   mqttClient.publish(MQTT_TOPIC_LOG, buffer);
   Serial.println(buffer);
 }
+void publishUptime() {
+  unsigned long uptimeSeconds = (millis() - bootTime) / 1000;
+  unsigned long hours = uptimeSeconds / 3600;
+  unsigned long minutes = (uptimeSeconds % 3600) / 60;
+  unsigned long seconds = uptimeSeconds % 60;
+
+  char uptimeStr[32];
+  snprintf(uptimeStr, sizeof(uptimeStr), "%lu:%02lu:%02lu", hours, minutes, seconds);
+  mqttClient.publish(MQTT_TOPIC_UPTIME, uptimeStr, true);
+}
+
+void publishState(const char* state) {
+  currentState = state;
+  mqttClient.publish(MQTT_TOPIC_STATE, state, true);
+}
+
+void publishError(const char* error) {
+  lastError = error;
+  mqttClient.publish(MQTT_TOPIC_LASTERROR, error, true);
+}
+
 void heartBeat(){
   unsigned long currentTime = millis();
   if(!(currentTime - lastTime > heartBeatPulse))
     return;
   lastTime = currentTime;
-  // Announce we're online
-  mqttClient.publish(MQTT_TOPIC_STATUS, "ONLINE");
-  mqttLogf("%s v%s online", PROP_NAME, VERSION);
-  
+  // Announce we're online with retained message
+  mqttClient.publish(MQTT_TOPIC_STATUS, "ONLINE", true);
+  publishUptime();
+
   promptStatus();
 }
 //===================================
@@ -202,8 +240,10 @@ void openDoor(){
   //and begin opening the door
   if(!checkLimitSwitch(DIR_OPEN)){
     mqttClient.publish(MQTT_TOPIC_MESSAGE,"Open Limit Switch: Triggered.");
+    publishState("OPEN");
     return;
   }
+  publishState("OPENING");
   motorDir = DIR_OPEN;              //update global motor direction variable
   digitalWrite(DIR_PIN,DIR_OPEN);   //set direction to open
   ledcWrite(PWM_PIN,MOTOR_SPEED);   //start opening
@@ -216,15 +256,18 @@ void closeDoor(){
 
   if(!checkLimitSwitch(DIR_CLOSE)){
     mqttClient.publish(MQTT_TOPIC_MESSAGE,"Close Limit Switch: Triggered.");
+    publishState("CLOSED");
     return;
   }
+  publishState("CLOSING");
   motorDir = DIR_CLOSE;             //update global motor direction variable
-  digitalWrite(DIR_PIN,DIR_CLOSE);  //set direction to open
-  ledcWrite(PWM_PIN,MOTOR_SPEED);   //start opening
+  digitalWrite(DIR_PIN,DIR_CLOSE);  //set direction to close
+  ledcWrite(PWM_PIN,MOTOR_SPEED);   //start closing
 }
 
 void stopDoor(){
   ledcWrite(PWM_PIN,0);
+  publishState("STOPPED");
 }
 
 bool checkLimitSwitch(bool dir){
@@ -239,9 +282,10 @@ bool checkLimitSwitch(bool dir){
     result = digitalRead(LIMIT_OPEN_PIN); //Open limit is triggered low
                                           //make sure that the open conditions are met when triggered
     if(!result){
-      stopDoor();
+      ledcWrite(PWM_PIN,0);  // Stop motor directly to avoid state conflict
       if(!limitOpenTriggered){
         mqttClient.publish(MQTT_TOPIC_MESSAGE,"Open limit is reached. Door is stopped.");
+        publishState("OPEN");
       }
       limitOpenTriggered = true;
       limitCloseTriggered = false;
@@ -253,9 +297,10 @@ bool checkLimitSwitch(bool dir){
     result =  !(analogRead(LIMIT_CLOSE_PIN) < LIMIT_CLOSE_THRESHOLD); //Close limit is triggered with smaller value than threshold
                                                                       //make sure that the close conditions are met when triggereed
     if(!result){
-      stopDoor();
+      ledcWrite(PWM_PIN,0);  // Stop motor directly to avoid state conflict
       if(!limitCloseTriggered){
         mqttClient.publish(MQTT_TOPIC_MESSAGE,"Close limit is reached. Door is closed.");
+        publishState("CLOSED");
       }
       limitCloseTriggered = true;
       limitOpenTriggered = false;
@@ -310,6 +355,7 @@ void setupIO(){
 //System initialization
 void _init(){
   Serial.begin(9600);
+  bootTime = millis();
   //IO setup
   setupIO();
   //WiFi setup
