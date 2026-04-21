@@ -5,7 +5,7 @@
 #include <WiFi.h>
 #include <PubSubClient.h>
 
-#define VERSION "2.1.0"
+#define VERSION "2.1.1"
 
 #define GAME_NAME "MermaidsTale"
 #define PROP_NAME "JungleDoor"
@@ -164,19 +164,19 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
     return;
   }
 
-  if (strcmp(msg,"promptStatus") == 0) {
+  if (strcmp(msg,"PROMPTSTATUS") == 0) {
     promptStatus();
     return;
   }
-  if (strcmp(msg,"open") == 0) {
+  if (strcmp(msg,"OPEN") == 0) {
     openDoor();
     return;
   }
-  if (strcmp(msg,"close") == 0) {
+  if (strcmp(msg,"CLOSE") == 0) {
     closeDoor();
     return;
   }
-  if (strcmp(msg,"stop") == 0) {
+  if (strcmp(msg,"STOP") == 0) {
     stopDoor();
     return;
   }
