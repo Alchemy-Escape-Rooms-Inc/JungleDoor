@@ -35,7 +35,7 @@
 #define LIMIT_CLOSE_PIN 7               //analog device on this pin
 
 #define MOTOR_TIMEOUT_MS 10000
-#define MOTOR_SPEED 150
+#define MOTOR_SPEED 255
 #define LIMIT_CLOSE_THRESHOLD 3600
 
 //===================================
@@ -46,6 +46,23 @@ unsigned long lastTime = 0;
 unsigned long bootTime = 0;
 String lastError = "NONE";
 String currentState = "IDLE";
+
+// --- Retained-command replay guard (added 2026-07-09) ---------------------
+// The door was auto-opening on every boot: WatchTower wire logs show the
+// board publish "state IDLE" and flip to "state OPENING" 49ms later on every
+// reconnect. The firmware never commands motion at boot -- the broker was
+// replaying a RETAINED payload (e.g. "OPEN") stuck on .../command to our
+// fresh subscription. Since every brownout reboot re-triggered it, the door
+// drifted open each time the board browned out.
+// Fix: for CMD_GRACE_MS after each (re)subscribe, ignore motion/RESET
+// commands (a live command cannot know we just booted, so anything arriving
+// that early can only be a retained replay), keep the door where it
+// physically is, and erase the retained copy so it can never replay again.
+// "Stay put" was chosen over NVS-restore/default-closed on purpose: any
+// boot-time motor drive would re-fire after every brownout reboot and could
+// loop the brownout itself. M3/operator re-commands the door explicitly.
+const unsigned long CMD_GRACE_MS = 3000UL;
+unsigned long cmdGraceUntil = 0;
 
 
 
@@ -100,6 +117,11 @@ void connectMQTT() {
       // Subscribe to command topic
       mqttClient.subscribe(MQTT_TOPIC_COMMAND);
 
+      // Arm the retained-replay guard: broker delivers retained /command
+      // payloads immediately after SUBACK, so anything inside this window
+      // is treated as a stale replay, not a live command.
+      cmdGraceUntil = millis() + CMD_GRACE_MS;
+
       // Publish retained status topics
       mqttClient.publish(MQTT_TOPIC_STATUS, "ONLINE", true);
       mqttClient.publish(MQTT_TOPIC_VERSION, VERSION, true);
@@ -142,6 +164,24 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
   Serial.printf("[MQTT] Received on %s: %s\n", topicBuf,msg);
 
   if(strcmp(topicBuf,MQTT_TOPIC_COMMAND) != 0){
+    return;
+  }
+
+  // Empty payload = our own retained-erase publish (or another guard's).
+  // Silently ignore so it doesn't log as an unknown command.
+  if(*msg == '\0'){
+    return;
+  }
+
+  // Retained-replay guard: swallow motion/RESET commands arriving within
+  // the boot/reconnect grace window and erase the retained copy. See the
+  // comment at CMD_GRACE_MS for why the door must stay put on boot.
+  // (RESET is guarded too -- a retained RESET on /command reboot-loops the
+  // board, a failure mode already seen on other props in this room.)
+  if((strcmp(msg,"OPEN") == 0 || strcmp(msg,"CLOSE") == 0 || strcmp(msg,"RESET") == 0)
+      && millis() < cmdGraceUntil){
+    mqttClient.publish(MQTT_TOPIC_COMMAND, "", true);   // erase retained payload
+    mqttLogf("[GUARD] Ignored '%s' during boot grace (retained replay) - door stays put", msg);
     return;
   }
 
@@ -343,6 +383,9 @@ void promptStatus(){
 void setupIO(){
   pinMode(DIR_PIN,OUTPUT);
   pinMode(PWM_PIN,OUTPUT);
+  digitalWrite(PWM_PIN,LOW);      // motor hard-off at boot (2026-07-09): never
+                                  // leave the MD13S PWM input undriven/floating
+                                  // between pinMode and ledcAttach
 
   pinMode(LIMIT_OPEN_PIN,INPUT_PULLUP);
   pinMode(LIMIT_CLOSE_PIN,INPUT);
