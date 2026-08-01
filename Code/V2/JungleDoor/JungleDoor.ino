@@ -66,10 +66,11 @@ unsigned long cmdGraceUntil = 0;
 
 // Close-seating overrun: when the close limit trips during a CLOSING move,
 // keep driving for this long so the door seats fully instead of stopping
-// the instant the sensor crosses threshold.
+// the instant the sensor crosses threshold. Nonzero = motor is driving past
+// the limit and program() MUST stop it at the deadline; openDoor()/stopDoor()
+// zero it because they take over the motor themselves.
 const unsigned long CLOSE_OVERRUN_MS = 2000UL;
 unsigned long closeOverrunUntil = 0;
-bool closeOverrunActive = false;
 
 
 
@@ -291,7 +292,7 @@ void openDoor(){
     return;
   }
   publishState("OPENING");
-  closeOverrunActive = false;       // cancel any in-flight close seating
+  closeOverrunUntil = 0;            // cancel any in-flight close seating
   motorDir = DIR_OPEN;              //update global motor direction variable
   digitalWrite(DIR_PIN,DIR_OPEN);   //set direction to open
   ledcWrite(PWM_PIN,MOTOR_SPEED);   //start opening
@@ -314,7 +315,7 @@ void closeDoor(){
 }
 
 void stopDoor(){
-  closeOverrunActive = false;   // STOP always wins, even mid-seating
+  closeOverrunUntil = 0;        // STOP always wins, even mid-seating
   ledcWrite(PWM_PIN,0);
   publishState("STOPPED");
 }
@@ -346,13 +347,14 @@ bool checkLimitSwitch(bool dir){
     result =  !(analogRead(LIMIT_CLOSE_PIN) < LIMIT_CLOSE_THRESHOLD); //Close limit is triggered with smaller value than threshold
                                                                       //make sure that the close conditions are met when triggereed
     if(!result){
-      if(currentState == "CLOSING" && !closeOverrunActive){
+      if(currentState == "CLOSING" && closeOverrunUntil == 0){
         // Mid-close: don't stop yet -- drive through the limit for
         // CLOSE_OVERRUN_MS so the door seats. program() finishes the stop.
-        closeOverrunActive = true;
+        // (== 0 guard: this branch re-runs every loop while the limit is
+        // held; without it the deadline would keep sliding and never expire.)
         closeOverrunUntil = millis() + CLOSE_OVERRUN_MS;
         mqttClient.publish(MQTT_TOPIC_MESSAGE,"Close limit is reached. Seating door.");
-      } else if(!closeOverrunActive){
+      } else if(closeOverrunUntil == 0){
         ledcWrite(PWM_PIN,0);  // Stop motor directly to avoid state conflict
         if(!limitCloseTriggered){
           mqttClient.publish(MQTT_TOPIC_MESSAGE,"Close limit is reached. Door is closed.");
@@ -434,16 +436,14 @@ void program(){
   heartBeat();
   checkLimitSwitch(motorDir);
 
-  // Finish the close-seating overrun: stop the motor CLOSE_OVERRUN_MS after
-  // the close limit tripped. State guard: if an OPEN/STOP superseded the
-  // close mid-overrun, just drop the flag and leave the motor alone.
-  if(closeOverrunActive && millis() >= closeOverrunUntil){
-    closeOverrunActive = false;
-    if(currentState == "CLOSING"){
-      ledcWrite(PWM_PIN,0);
-      mqttClient.publish(MQTT_TOPIC_MESSAGE,"Close limit is reached. Door is closed.");
-      publishState("CLOSED");
-    }
+  // Finish the close-seating overrun. Stop unconditionally: if the deadline
+  // is still set, nothing else has taken over the motor (OPEN/STOP clear it),
+  // so a state changed by e.g. a duplicate CLOSE must not skip this stop.
+  if(closeOverrunUntil != 0 && millis() >= closeOverrunUntil){
+    closeOverrunUntil = 0;
+    ledcWrite(PWM_PIN,0);
+    mqttClient.publish(MQTT_TOPIC_MESSAGE,"Close limit is reached. Door is closed.");
+    publishState("CLOSED");
   }
 }
 //===================================
