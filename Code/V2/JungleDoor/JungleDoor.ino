@@ -5,7 +5,7 @@
 #include <WiFi.h>
 #include <PubSubClient.h>
 
-#define VERSION "2.1.1"
+#define VERSION "2.2.0"
 
 #define GAME_NAME "MermaidsTale"
 #define PROP_NAME "JungleDoor"
@@ -63,6 +63,13 @@ String currentState = "IDLE";
 // loop the brownout itself. M3/operator re-commands the door explicitly.
 const unsigned long CMD_GRACE_MS = 3000UL;
 unsigned long cmdGraceUntil = 0;
+
+// Close-seating overrun: when the close limit trips during a CLOSING move,
+// keep driving for this long so the door seats fully instead of stopping
+// the instant the sensor crosses threshold.
+const unsigned long CLOSE_OVERRUN_MS = 2000UL;
+unsigned long closeOverrunUntil = 0;
+bool closeOverrunActive = false;
 
 
 
@@ -284,6 +291,7 @@ void openDoor(){
     return;
   }
   publishState("OPENING");
+  closeOverrunActive = false;       // cancel any in-flight close seating
   motorDir = DIR_OPEN;              //update global motor direction variable
   digitalWrite(DIR_PIN,DIR_OPEN);   //set direction to open
   ledcWrite(PWM_PIN,MOTOR_SPEED);   //start opening
@@ -306,6 +314,7 @@ void closeDoor(){
 }
 
 void stopDoor(){
+  closeOverrunActive = false;   // STOP always wins, even mid-seating
   ledcWrite(PWM_PIN,0);
   publishState("STOPPED");
 }
@@ -337,10 +346,18 @@ bool checkLimitSwitch(bool dir){
     result =  !(analogRead(LIMIT_CLOSE_PIN) < LIMIT_CLOSE_THRESHOLD); //Close limit is triggered with smaller value than threshold
                                                                       //make sure that the close conditions are met when triggereed
     if(!result){
-      ledcWrite(PWM_PIN,0);  // Stop motor directly to avoid state conflict
-      if(!limitCloseTriggered){
-        mqttClient.publish(MQTT_TOPIC_MESSAGE,"Close limit is reached. Door is closed.");
-        publishState("CLOSED");
+      if(currentState == "CLOSING" && !closeOverrunActive){
+        // Mid-close: don't stop yet -- drive through the limit for
+        // CLOSE_OVERRUN_MS so the door seats. program() finishes the stop.
+        closeOverrunActive = true;
+        closeOverrunUntil = millis() + CLOSE_OVERRUN_MS;
+        mqttClient.publish(MQTT_TOPIC_MESSAGE,"Close limit is reached. Seating door.");
+      } else if(!closeOverrunActive){
+        ledcWrite(PWM_PIN,0);  // Stop motor directly to avoid state conflict
+        if(!limitCloseTriggered){
+          mqttClient.publish(MQTT_TOPIC_MESSAGE,"Close limit is reached. Door is closed.");
+          publishState("CLOSED");
+        }
       }
       limitCloseTriggered = true;
       limitOpenTriggered = false;
@@ -416,6 +433,18 @@ void program(){
 
   heartBeat();
   checkLimitSwitch(motorDir);
+
+  // Finish the close-seating overrun: stop the motor CLOSE_OVERRUN_MS after
+  // the close limit tripped. State guard: if an OPEN/STOP superseded the
+  // close mid-overrun, just drop the flag and leave the motor alone.
+  if(closeOverrunActive && millis() >= closeOverrunUntil){
+    closeOverrunActive = false;
+    if(currentState == "CLOSING"){
+      ledcWrite(PWM_PIN,0);
+      mqttClient.publish(MQTT_TOPIC_MESSAGE,"Close limit is reached. Door is closed.");
+      publishState("CLOSED");
+    }
+  }
 }
 //===================================
 //          MAIN SETUP
