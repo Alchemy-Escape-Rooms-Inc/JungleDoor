@@ -5,7 +5,7 @@
 #include <WiFi.h>
 #include <PubSubClient.h>
 
-#define VERSION "2.2.1"
+#define VERSION "2.2.2"
 
 #define GAME_NAME "MermaidsTale"
 #define PROP_NAME "JungleDoor"
@@ -69,7 +69,7 @@ unsigned long cmdGraceUntil = 0;
 // the instant the sensor crosses threshold. Nonzero = motor is driving past
 // the limit and program() MUST stop it at the deadline; openDoor()/stopDoor()
 // zero it because they take over the motor themselves.
-const unsigned long CLOSE_OVERRUN_MS = 1000UL;
+const unsigned long CLOSE_OVERRUN_MS = 500UL;  // 2026-08-02 user: 1s still ran long on the live door
 unsigned long closeOverrunUntil = 0;
 
 
