@@ -5,7 +5,7 @@
 #include <WiFi.h>
 #include <PubSubClient.h>
 
-#define VERSION "2.2.2"
+#define VERSION "2.3.0"
 
 #define GAME_NAME "MermaidsTale"
 #define PROP_NAME "JungleDoor"
@@ -23,11 +23,20 @@
 #define MQTT_TOPIC_LASTERROR "MermaidsTale/JungleDoor/lastError"
 #define MQTT_TOPIC_UPTIME   "MermaidsTale/JungleDoor/uptime"
 
-#define DIR_PIN 4
-#define DIR_OPEN LOW
+// Motor driver: XY-1600 dual H-bridge, one channel used (2026-10-16, replaced
+// the dead Cytron MD13S). Two-PWM drive: one input PWMs per direction, the
+// other held at 0. Reuses the two MD13S control wires so only the driver end
+// moves:
+//   GPIO 6 (old MD13S PWM) -> XY IN1 = OPEN direction
+//   GPIO 4 (old MD13S DIR) -> XY IN2 = CLOSE direction
+//   ENA jumper ON (enable held high), ESP32 GND -> XY signal GND
+// Same scheme drives a BTS7960 (IN1->RPWM, IN2->LPWM, R_EN/L_EN -> 3.3V).
+// If the door runs the wrong way, swap the motor's two output leads.
+#define RPWM_PIN 6                      // open-direction PWM (XY IN1)
+#define LPWM_PIN 4                      // close-direction PWM (XY IN2)
+#define DIR_OPEN LOW                    // logical direction flags (motorDir)
 #define DIR_CLOSE HIGH
 
-#define PWM_PIN 6
 #define PWM_FREQ 5000
 #define PWM_RESOLUTION 8
 
@@ -294,8 +303,7 @@ void openDoor(){
   publishState("OPENING");
   closeOverrunUntil = 0;            // cancel any in-flight close seating
   motorDir = DIR_OPEN;              //update global motor direction variable
-  digitalWrite(DIR_PIN,DIR_OPEN);   //set direction to open
-  ledcWrite(PWM_PIN,MOTOR_SPEED);   //start opening
+  driveMotor(DIR_OPEN);             //start opening
 }
 
 void closeDoor(){
@@ -310,13 +318,29 @@ void closeDoor(){
   }
   publishState("CLOSING");
   motorDir = DIR_CLOSE;             //update global motor direction variable
-  digitalWrite(DIR_PIN,DIR_CLOSE);  //set direction to close
-  ledcWrite(PWM_PIN,MOTOR_SPEED);   //start closing
+  driveMotor(DIR_CLOSE);            //start closing
+}
+
+// One side PWMs, the other MUST be 0 (both driven = brake, not motion).
+// The idle side is zeroed first so the bridge never sees both driven.
+void driveMotor(bool dir){
+  if(dir == DIR_OPEN){
+    ledcWrite(LPWM_PIN,0);
+    ledcWrite(RPWM_PIN,MOTOR_SPEED);
+  }else{
+    ledcWrite(RPWM_PIN,0);
+    ledcWrite(LPWM_PIN,MOTOR_SPEED);
+  }
+}
+
+void motorOff(){
+  ledcWrite(RPWM_PIN,0);
+  ledcWrite(LPWM_PIN,0);
 }
 
 void stopDoor(){
   closeOverrunUntil = 0;        // STOP always wins, even mid-seating
-  ledcWrite(PWM_PIN,0);
+  motorOff();
   publishState("STOPPED");
 }
 
@@ -332,7 +356,7 @@ bool checkLimitSwitch(bool dir){
     result = digitalRead(LIMIT_OPEN_PIN); //Open limit is triggered low
                                           //make sure that the open conditions are met when triggered
     if(!result){
-      ledcWrite(PWM_PIN,0);  // Stop motor directly to avoid state conflict
+      motorOff();  // Stop motor directly to avoid state conflict
       if(!limitOpenTriggered){
         mqttClient.publish(MQTT_TOPIC_MESSAGE,"Open limit is reached. Door is stopped.");
         publishState("OPEN");
@@ -355,7 +379,7 @@ bool checkLimitSwitch(bool dir){
         closeOverrunUntil = millis() + CLOSE_OVERRUN_MS;
         mqttClient.publish(MQTT_TOPIC_MESSAGE,"Close limit is reached. Seating door.");
       } else if(closeOverrunUntil == 0){
-        ledcWrite(PWM_PIN,0);  // Stop motor directly to avoid state conflict
+        motorOff();  // Stop motor directly to avoid state conflict
         if(!limitCloseTriggered){
           mqttClient.publish(MQTT_TOPIC_MESSAGE,"Close limit is reached. Door is closed.");
           publishState("CLOSED");
@@ -400,17 +424,14 @@ void promptStatus(){
 
 //I/O setup
 void setupIO(){
-  pinMode(DIR_PIN,OUTPUT);
-  pinMode(PWM_PIN,OUTPUT);
-  digitalWrite(PWM_PIN,LOW);      // motor hard-off at boot (2026-07-09): never
-                                  // leave the MD13S PWM input undriven/floating
+  pinMode(RPWM_PIN,OUTPUT);
+  pinMode(LPWM_PIN,OUTPUT);
+  digitalWrite(RPWM_PIN,LOW);     // motor hard-off at boot (2026-07-09): never
+  digitalWrite(LPWM_PIN,LOW);     // leave the driver inputs undriven/floating
                                   // between pinMode and ledcAttach
 
   pinMode(LIMIT_OPEN_PIN,INPUT_PULLUP);
   pinMode(LIMIT_CLOSE_PIN,INPUT);
-
-  //initially configure to open
-  digitalWrite(DIR_PIN,DIR_OPEN);
 
   Serial.println("IO pins initialization complete.");
 }
@@ -425,7 +446,9 @@ void _init(){
   //Mqtt server setup
   setupMQTT();
   //motor control configuration
-  ledcAttach(PWM_PIN, PWM_FREQ, PWM_RESOLUTION);
+  ledcAttach(RPWM_PIN, PWM_FREQ, PWM_RESOLUTION);
+  ledcAttach(LPWM_PIN, PWM_FREQ, PWM_RESOLUTION);
+  motorOff();
 }
 void program(){
   if (!mqttClient.connected()) {
@@ -441,7 +464,7 @@ void program(){
   // so a state changed by e.g. a duplicate CLOSE must not skip this stop.
   if(closeOverrunUntil != 0 && millis() >= closeOverrunUntil){
     closeOverrunUntil = 0;
-    ledcWrite(PWM_PIN,0);
+    motorOff();
     mqttClient.publish(MQTT_TOPIC_MESSAGE,"Close limit is reached. Door is closed.");
     publishState("CLOSED");
   }
