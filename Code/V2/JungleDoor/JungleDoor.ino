@@ -4,6 +4,7 @@
 
 #include <WiFi.h>
 #include <PubSubClient.h>
+#include <ArduinoOTA.h>
 
 #define VERSION "2.3.0"
 
@@ -23,17 +24,16 @@
 #define MQTT_TOPIC_LASTERROR "MermaidsTale/JungleDoor/lastError"
 #define MQTT_TOPIC_UPTIME   "MermaidsTale/JungleDoor/uptime"
 
-// Motor driver: XY-1600 dual H-bridge, one channel used (2026-10-16, replaced
-// the dead Cytron MD13S). Two-PWM drive: one input PWMs per direction, the
-// other held at 0. Reuses the two MD13S control wires so only the driver end
-// moves:
-//   GPIO 6 (old MD13S PWM) -> XY IN1 = OPEN direction
-//   GPIO 4 (old MD13S DIR) -> XY IN2 = CLOSE direction
-//   ENA jumper ON (enable held high), ESP32 GND -> XY signal GND
-// Same scheme drives a BTS7960 (IN1->RPWM, IN2->LPWM, R_EN/L_EN -> 3.3V).
-// If the door runs the wrong way, swap the motor's two output leads.
-#define RPWM_PIN 6                      // open-direction PWM (XY IN1)
-#define LPWM_PIN 4                      // close-direction PWM (XY IN2)
+// Motor driver: BTS7960 dual H-bridge (2026-10-16, replaced the dead Cytron
+// MD13S). Two-PWM drive: one input PWMs per direction, the other held at 0.
+// Reuses the two MD13S control wires so only the driver end moves:
+//   GPIO 6 (old MD13S PWM) -> RPWM = OPEN direction
+//   GPIO 4 (old MD13S DIR) -> LPWM = CLOSE direction
+//   R_EN, L_EN, VCC -> ESP32 3.3V (VCC is logic power, NOT the motor supply)
+//   GND -> ESP32 GND; B+/B- = motor supply; M+/M- = motor
+// If the door runs the wrong way, swap M+/M-.
+#define RPWM_PIN 6                      // open-direction PWM
+#define LPWM_PIN 4                      // close-direction PWM
 #define DIR_OPEN LOW                    // logical direction flags (motorDir)
 #define DIR_CLOSE HIGH
 
@@ -42,6 +42,10 @@
 
 #define LIMIT_OPEN_PIN 8                //digital device on this pin
 #define LIMIT_CLOSE_PIN 7               //analog device on this pin
+
+// Over-the-air updates (mandatory per mqtt-protocol.md since 2026-09-22):
+// hostname = PROP_NAME, password = the Wi-Fi password, ESP32 port 3232.
+#define OTA_PORT 3232
 
 #define MOTOR_TIMEOUT_MS 10000
 #define MOTOR_SPEED 255
@@ -117,6 +121,26 @@ void setupWiFi() {
   Serial.println("\nConnected.");
 }
 //===================================
+//          OTA (WIRELESS UPDATES)
+//===================================
+void setupOTA() {
+  ArduinoOTA.setHostname(PROP_NAME);
+  ArduinoOTA.setPassword(WIFI_PASS);
+  ArduinoOTA.setPort(OTA_PORT);
+  ArduinoOTA.onStart([]() {
+    // Never let the door drive while the board is being re-flashed.
+    closeOverrunUntil = 0;
+    motorOff();
+    publishState("STOPPED");
+    mqttLogf("OTA update starting - motor stopped");
+  });
+  ArduinoOTA.onError([](ota_error_t error) {
+    Serial.printf("[OTA] Error %u\n", error);
+  });
+  ArduinoOTA.begin();
+  Serial.printf("[OTA] Ready at %s:%d\n", WiFi.localIP().toString().c_str(), OTA_PORT);
+}
+//===================================
 //          MQTT FUNCTIONS
 //===================================
 void connectMQTT() {
@@ -147,7 +171,8 @@ void connectMQTT() {
       mqttClient.publish(MQTT_TOPIC_SAFETY, "OK", true);
       mqttClient.publish(MQTT_TOPIC_LASTERROR, lastError.c_str(), true);
 
-      mqttLogf("%s v%s online", PROP_NAME, VERSION);
+      mqttLogf("%s v%s online IP:%s OTA:%d", PROP_NAME, VERSION,
+               WiFi.localIP().toString().c_str(), OTA_PORT);
 
     } else {
       Serial.printf("failed (rc=%d), retrying in 5s\n", mqttClient.state());
@@ -208,7 +233,8 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
     return;
   }
   if(strcmp(msg,"STATUS") == 0){
-    const char* state = "READY";
+    char state[48];
+    snprintf(state, sizeof(state), "READY IP:%s", WiFi.localIP().toString().c_str());
     mqttClient.publish(MQTT_TOPIC_COMMAND,state);
     Serial.printf("[MQTT] STATUS -> %s\n",state);
     return;
@@ -443,6 +469,8 @@ void _init(){
   setupIO();
   //WiFi setup
   setupWiFi();
+  //Wireless update setup
+  setupOTA();
   //Mqtt server setup
   setupMQTT();
   //motor control configuration
@@ -455,6 +483,7 @@ void program(){
     connectMQTT();
   }
   mqttClient.loop();
+  ArduinoOTA.handle();
 
   heartBeat();
   checkLimitSwitch(motorDir);

@@ -69,6 +69,11 @@ namespace manifest {
 
 // ── Device Identity ─────────────────────────────────────────────────────────
 inline constexpr const char* DEVICE_NAME    = "JungleDoor";       // @DEVICE_NAME  (MQTT client ID + topic base)
+
+// Over-the-air updates (live sketch: Code/V2/JungleDoor, v2.3.0+)
+#define OTA_ENABLED           "yes"
+#define OTA_HOSTNAME          "JungleDoor"          // = DEVICE_NAME
+#define OTA_PORT              3232                  // ESP32-S3
 inline constexpr const char* FIRMWARE_VERSION = "3.4.0";          // @FIRMWARE_VERSION
 
 
