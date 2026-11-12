@@ -6,7 +6,7 @@
 #include <PubSubClient.h>
 #include <ArduinoOTA.h>
 
-#define VERSION "2.3.1"
+#define VERSION "2.4.0"
 
 #define GAME_NAME "MermaidsTale"
 #define PROP_NAME "JungleDoor"
@@ -77,6 +77,19 @@ String currentState = "IDLE";
 const unsigned long CMD_GRACE_MS = 3000UL;
 unsigned long cmdGraceUntil = 0;
 
+// --- Motor run-time limit (added 2026-11-12) -----------------------------
+// MOTOR_TIMEOUT_MS was defined but never used: nothing stopped the motor
+// except a limit switch. If the door jammed, or a limit switch failed, or
+// the broker dropped mid-move (connectMQTT() blocks in a while-loop, so
+// program() never reaches checkLimitSwitch()), the motor ran until someone
+// noticed. The 2026-10-04 log has it pushing a mop bucket for 13 minutes.
+// motorStartedAt is set in driveMotor() and cleared in motorOff(), so every
+// start and every stop in this file is covered by those two choke points.
+// enforceMotorTimeout() is called from program() AND from inside the
+// connectMQTT() retry loop, so a lost broker cannot outlast the limit.
+unsigned long motorStartedAt = 0;
+void enforceMotorTimeout();     // defined below; called from connectMQTT()
+
 // Close-seating overrun: when the close limit trips during a CLOSING move,
 // keep driving for this long so the door seats fully instead of stopping
 // the instant the sensor crosses threshold. Nonzero = motor is driving past
@@ -145,6 +158,8 @@ void setupOTA() {
 //===================================
 void connectMQTT() {
   while (!mqttClient.connected()) {
+    // The motor must still be stopped on time while the broker is away.
+    enforceMotorTimeout();
     Serial.print("Connecting to MQTT...");
 
     String clientId = PROP_NAME;
@@ -350,6 +365,7 @@ void closeDoor(){
 // One side PWMs, the other MUST be 0 (both driven = brake, not motion).
 // The idle side is zeroed first so the bridge never sees both driven.
 void driveMotor(bool dir){
+  motorStartedAt = millis();      // start the run-time limit
   if(dir == DIR_OPEN){
     ledcWrite(LPWM_PIN,0);
     ledcWrite(RPWM_PIN,MOTOR_SPEED);
@@ -362,6 +378,23 @@ void driveMotor(bool dir){
 void motorOff(){
   ledcWrite(RPWM_PIN,0);
   ledcWrite(LPWM_PIN,0);
+  motorStartedAt = 0;             // clear the run-time limit
+}
+
+// Hard stop if a move has run longer than MOTOR_TIMEOUT_MS. Safe to call at
+// any time and from anywhere: it does nothing unless the motor is running.
+// publish() simply returns false when the broker is unreachable.
+void enforceMotorTimeout(){
+  if(motorStartedAt == 0) return;
+  if(millis() - motorStartedAt < MOTOR_TIMEOUT_MS) return;
+  closeOverrunUntil = 0;          // abandon any close-seating overrun
+  motorOff();                     // clears motorStartedAt
+  lastError = "MOTOR_TIMEOUT";
+  mqttClient.publish(MQTT_TOPIC_LASTERROR, lastError.c_str(), true);
+  mqttClient.publish(MQTT_TOPIC_SAFETY, "MOTOR_TIMEOUT", true);
+  mqttClient.publish(MQTT_TOPIC_MESSAGE,
+    "Motor run-time limit reached. Motor stopped. Door position unknown.");
+  publishState("FAULT_TIMEOUT");
 }
 
 void stopDoor(){
@@ -479,6 +512,7 @@ void _init(){
   motorOff();
 }
 void program(){
+  enforceMotorTimeout();          // before anything that can block
   if (!mqttClient.connected()) {
     connectMQTT();
   }
